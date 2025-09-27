@@ -15,39 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-*.iml
-.DS_Store
-.Rproj.user
-/*.ipr
-/*.iws
-/.bloop/
-/.bsp
-/.classpath
-/.idea
-/.metals/
-/.project
-/.scala-build
-/.settings/
-/.vscode/
-/bin/
-/conf/
-/doc/
-/log/
-/site/
-__pycache__
-dependency-reduced-pom.xml
-target
+"""Main entry point for the sedona_databricks_tester package."""
 
-# Windows WSL Images copy
-.Identifier
-*:Zone.Identifier
-*.Identifier
+from .cli import cli
 
-# Ignore minified files and source maps
-*.min.css
-*.min.css.map
-*.min.js
-*.min.js.map
-
-# Ignore node_modules in docs-overrides
-docs-overrides/node_modules/
+if __name__ == "__main__":
+    cli()
