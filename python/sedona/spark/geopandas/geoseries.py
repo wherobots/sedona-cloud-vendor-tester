@@ -811,23 +811,15 @@ class GeoSeries(GeoFrame, pspd.Series):
 
     @property
     def geom_type(self) -> pspd.Series:
-        spark_col = stf.GeometryType(self.spark.column)
+        spark_col = stf.ST_GeometryType(self.spark.column)
         result = self._query_geometry_column(
             spark_col,
             returns_geom=False,
         )
 
-        # Sedona returns the string in all caps unlike GeoPandas.
-        sgpd_to_gpg_name_map = {
-            "POINT": "Point",
-            "LINESTRING": "LineString",
-            "POLYGON": "Polygon",
-            "MULTIPOINT": "MultiPoint",
-            "MULTILINESTRING": "MultiLineString",
-            "MULTIPOLYGON": "MultiPolygon",
-            "GEOMETRYCOLLECTION": "GeometryCollection",
-        }
-        result = result.map(lambda x: sgpd_to_gpg_name_map.get(x, x))
+        # ST_GeometryType returns string as 'ST_Point'
+        # we crop the prefix off to get 'Point'
+        result = result.map(lambda x: x[3:])
         return result
 
     @property
@@ -946,6 +938,30 @@ class GeoSeries(GeoFrame, pspd.Series):
             returns_geom=True,
         )
 
+    def symmetric_difference(self, other, align=None) -> "GeoSeries":
+        other_series, extended = self._make_series_of_val(other)
+        align = False if extended else align
+
+        spark_expr = stf.ST_SymDifference(F.col("L"), F.col("R"))
+        return self._row_wise_operation(
+            spark_expr,
+            other_series,
+            align=align,
+            returns_geom=True,
+        )
+
+    def union(self, other, align=None) -> "GeoSeries":
+        other_series, extended = self._make_series_of_val(other)
+        align = False if extended else align
+
+        spark_expr = stf.ST_Union(F.col("L"), F.col("R"))
+        return self._row_wise_operation(
+            spark_expr,
+            other_series,
+            align=align,
+            returns_geom=True,
+        )
+
     @property
     def is_simple(self) -> pspd.Series:
         spark_expr = stf.ST_IsSimple(self.spark.column)
@@ -976,13 +992,17 @@ class GeoSeries(GeoFrame, pspd.Series):
 
     @property
     def is_closed(self):
-        # Implementation of the abstract method.
-        raise NotImplementedError(
-            _not_implemented_error(
-                "is_closed",
-                "Tests if LineString geometries are closed (start equals end point).",
-            )
+        # Only check LineStrings; return False for all other geometry types
+        spark_expr = F.when(
+            stf.ST_GeometryType(self.spark.column) == "ST_LineString",
+            stf.ST_IsClosed(self.spark.column),
+        ).otherwise(False)
+
+        result = self._query_geometry_column(
+            spark_expr,
+            returns_geom=False,
         )
+        return _to_bool(result)
 
     @property
     def has_z(self) -> pspd.Series:
@@ -2023,7 +2043,6 @@ class GeoSeries(GeoFrame, pspd.Series):
 
         from pyspark.pandas.utils import default_session
         from pyspark.pandas.internal import InternalField
-        import numpy as np
 
         if isinstance(data, list) and not isinstance(data[0], (tuple, list)):
             data = [(obj,) for obj in data]
@@ -2404,13 +2423,17 @@ class GeoSeries(GeoFrame, pspd.Series):
             ],
             column_label_names=None,
         )
-        return pspd.DataFrame(internal)
+        result = pspd.DataFrame(internal)
+        # Convert max/min float values to NaN
+        # e.g POINT EMPTY, represented as POINT (NaN NaN), should result in all NaN
+        result = result.replace(np.finfo(np.float64).max, np.nan).replace(
+            -np.finfo(np.float64).max, np.nan
+        )
+        return result
 
     @property
     def total_bounds(self):
-        import numpy as np
         import warnings
-        from pyspark.sql import functions as F
 
         if len(self) == 0:
             # numpy 'min' cannot handle empty arrays
@@ -2422,23 +2445,18 @@ class GeoSeries(GeoFrame, pspd.Series):
             warnings.filterwarnings(
                 "ignore", r"All-NaN slice encountered", RuntimeWarning
             )
-            total_bounds_df = ps_df.agg(
-                {
-                    "minx": ["min"],
-                    "miny": ["min"],
-                    "maxx": ["max"],
-                    "maxy": ["max"],
-                }
-            )
 
-            return np.array(
-                (
-                    np.nanmin(total_bounds_df["minx"]["min"]),  # minx
-                    np.nanmin(total_bounds_df["miny"]["min"]),  # miny
-                    np.nanmax(total_bounds_df["maxx"]["max"]),  # maxx
-                    np.nanmax(total_bounds_df["maxy"]["max"]),  # maxy
-                )
-            )
+            minx = ps_df["minx"].min(skipna=True)
+            miny = ps_df["miny"].min(skipna=True)
+
+            # skipna=True doesn't work properly for max(), so we use dropna() as a workaround
+            maxx = ps_df["maxx"].dropna()
+            maxy = ps_df["maxy"].dropna()
+
+            maxx = maxx.max(skipna=True) if not maxx.empty else np.nan
+            maxy = maxy.max(skipna=True) if not maxy.empty else np.nan
+
+            return np.array((minx, miny, maxx, maxy))
 
     # GeoSeries-only (not in GeoDataFrame)
     def estimate_utm_crs(self, datum_name: str = "WGS 84") -> "CRS":
