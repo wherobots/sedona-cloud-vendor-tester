@@ -6,13 +6,6 @@
             "num_workers": 1,
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "STANDARD",
-            "init_scripts": [
-                {
-                    "volumes": {
-                        "destination": "/Volumes/wherobots/kristin/sedona/smoke-test/init_scripts/sedona_init.sh"
-                    }
-                }
-            ],
             "spark_conf": {
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
@@ -28,13 +21,6 @@
             "num_workers": 1,
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "PHOTON",
-            "init_scripts": [
-                {
-                    "volumes": {
-                        "destination": "/Volumes/wherobots/kristin/sedona/smoke-test/init_scripts/sedona_init.sh"
-                    }
-                }
-            ],
             "spark_conf": {
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
@@ -50,13 +36,6 @@
             "num_workers": 1,
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "STANDARD",
-            "init_scripts": [
-                {
-                    "volumes": {
-                        "destination": "/Volumes/wherobots/kristin/sedona/smoke-test/init_scripts/sedona_init.sh"
-                    }
-                }
-            ],
             "spark_conf": {
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
@@ -72,13 +51,6 @@
             "num_workers": 1,
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "PHOTON",
-            "init_scripts": [
-                {
-                    "volumes": {
-                        "destination": "/Volumes/wherobots/kristin/sedona/smoke-test/init_scripts/sedona_init.sh"
-                    }
-                }
-            ],
             "spark_conf": {
                 "spark.serializer": "org.apache.spark.serializer.KryoSerializer",
                 "spark.kryo.registrator": "org.apache.sedona.core.serde.SedonaKryoRegistrator",
