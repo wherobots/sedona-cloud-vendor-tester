@@ -21,6 +21,7 @@ on:
   push:
     branches:
       - master
+      - test-dbr-173
   pull_request_target: # This is a dangerous operation. Only people who are within Wherobots organization should be able to trigger this PR.
     types:
       - opened
@@ -51,11 +52,11 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - spark: 3.5
-            scala: 2.12
+          - spark: '3.5'
+            scala: '2.12'
             jdk: '11'
-          - spark: 4.0
-            scala: 2.13
+          - spark: '4.0'
+            scala: '2.13'
             jdk: '17'
     outputs:
       jar-path: ${{ steps.build-info.outputs.jar-path }}
@@ -116,17 +117,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - spark: 3.5
-            scala: 2.12
+          - spark: '3.5'
+            scala: '2.12'
             runtime: '16.4.x-scala2.12'
-          - spark: 3.5
-            scala: 2.12
+          - spark: '3.5'
+            scala: '2.12'
             runtime: '16.4.x-scala2.12-photon'
-          - spark: 4.0
-            scala: 2.13
+          - spark: '4.0'
+            scala: '2.13'
             runtime: '17.3.x-scala2.13'
-          - spark: 4.0
-            scala: 2.13
+          - spark: '4.0'
+            scala: '2.13'
             runtime: '17.3.x-scala2.13-photon'
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +184,7 @@ jobs:
   cleanup:
     needs: databricks-test
     runs-on: ubuntu-22.04
-    if: always()
+    if: false
     steps:
       - uses: actions/checkout@v4
         with:
