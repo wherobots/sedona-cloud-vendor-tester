@@ -51,10 +51,12 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - spark: 3.5
-            scala: 2.12
+          - spark: '3.5'
+            scala: '2.12'
             jdk: '11'
-            enable_databricks_test: true
+          - spark: '4.0'
+            scala: '2.13'
+            jdk: '17'
     outputs:
       jar-path: ${{ steps.build-info.outputs.jar-path }}
       sedona-version: ${{ steps.build-info.outputs.sedona-version }}
@@ -101,7 +103,6 @@ jobs:
           echo "Sedona Version: ${SEDONA_VERSION}"
           echo "GeoTools JAR: ${GEOTOOLS_JAR_PATH}"
       - name: Upload build artifacts
-        if: matrix.enable_databricks_test
         uses: actions/upload-artifact@v4
         with:
           name: sedona-jars-${{ matrix.spark }}-${{ matrix.scala }}
@@ -115,14 +116,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - spark: 3.5
-            scala: 2.12
-            jdk: '11'
+          - spark: '3.5'
+            scala: '2.12'
             runtime: '16.4.x-scala2.12'
-          - spark: 3.5
-            scala: 2.12
-            jdk: '11'
+          - spark: '3.5'
+            scala: '2.12'
             runtime: '16.4.x-scala2.12-photon'
+          - spark: '4.0'
+            scala: '2.13'
+            runtime: '17.3.x-scala2.13'
+          - spark: '4.0'
+            scala: '2.13'
+            runtime: '17.3.x-scala2.13-photon'
     steps:
       - uses: actions/checkout@v4
         with:

@@ -97,15 +97,15 @@ class DatabricksManager:
             return False
 
     def prepare_init_script(
-        self, jar_paths: dict[str, str], volume_path: str
+        self, jar_paths: dict[str, str], volume_path: str, cluster_name: str
     ) -> dict[str, str]:
         """Upload init scripts and JAR files to Databricks Volumes, then generate init script
         and upload it.
 
         Args:
-            runtime_version: The Databricks runtime version
             jar_paths: Dictionary of jar_name -> local_file_path for JARs to upload (required)
             volume_path: Base path in Volumes to store files
+            cluster_name: Name of the cluster (used for naming init script)
         """
         logger.info("Uploading files to Volumes...")
 
@@ -164,7 +164,7 @@ class DatabricksManager:
         init_script_content = self._generate_init_script(uploaded_files)
 
         # Upload init script to Volumes
-        init_script_path = f"{base_path}/init_scripts/sedona_init.sh"
+        init_script_path = f"{base_path}/init_scripts/sedona_init_{cluster_name}.sh"
         logger.info(f"Uploading init script to Volume: {init_script_path}")
 
         # Use the Files API to upload init script to Volumes
@@ -213,7 +213,7 @@ class DatabricksManager:
             cluster_name: Full name for the cluster
         """
         # Upload files to Volumes
-        uploaded_files = self.prepare_init_script(jar_paths, volume_path)
+        uploaded_files = self.prepare_init_script(jar_paths, volume_path, cluster_name)
 
         # Create or reuse cluster
         return self.reuse_or_create_cluster(
