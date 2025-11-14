@@ -21,7 +21,6 @@ on:
   push:
     branches:
       - master
-      - test-dbr-173
   pull_request_target: # This is a dangerous operation. Only people who are within Wherobots organization should be able to trigger this PR.
     types:
       - opened
@@ -184,7 +183,7 @@ jobs:
   cleanup:
     needs: databricks-test
     runs-on: ubuntu-22.04
-    if: false
+    if: always()
     steps:
       - uses: actions/checkout@v4
         with:
