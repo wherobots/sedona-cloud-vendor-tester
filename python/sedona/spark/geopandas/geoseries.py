@@ -740,21 +740,25 @@ class GeoSeries(GeoFrame, pspd.Series):
     def length(self) -> pspd.Series:
         spark_expr = (
             F.when(
-                stf.GeometryType(self.spark.column).isin(
-                    ["LINESTRING", "MULTILINESTRING"]
+                stf.ST_GeometryType(self.spark.column).isin(
+                    ["ST_LineString", "ST_MultiLineString"]
                 ),
                 stf.ST_Length(self.spark.column),
             )
             .when(
-                stf.GeometryType(self.spark.column).isin(["POLYGON", "MULTIPOLYGON"]),
+                stf.ST_GeometryType(self.spark.column).isin(
+                    ["ST_Polygon", "ST_MultiPolygon"]
+                ),
                 stf.ST_Perimeter(self.spark.column),
             )
             .when(
-                stf.GeometryType(self.spark.column).isin(["POINT", "MULTIPOINT"]),
+                stf.ST_GeometryType(self.spark.column).isin(
+                    ["ST_Point", "ST_MultiPoint"]
+                ),
                 0.0,
             )
             .when(
-                stf.GeometryType(self.spark.column).isin(["GEOMETRYCOLLECTION"]),
+                stf.ST_GeometryType(self.spark.column).isin(["ST_GeometryCollection"]),
                 stf.ST_Length(self.spark.column) + stf.ST_Perimeter(self.spark.column),
             )
         )
@@ -953,7 +957,7 @@ class GeoSeries(GeoFrame, pspd.Series):
         # Geopandas and shapely return NULL for GeometryCollections, so we handle it separately
         # https://shapely.readthedocs.io/en/stable/reference/shapely.boundary.html
         spark_expr = F.when(
-            stf.GeometryType(self.spark.column).isin(["GEOMETRYCOLLECTION"]),
+            stf.ST_GeometryType(self.spark.column).isin(["ST_GeometryCollection"]),
             None,
         ).otherwise(stf.ST_Boundary(self.spark.column))
         return self._query_geometry_column(
@@ -1037,9 +1041,13 @@ class GeoSeries(GeoFrame, pspd.Series):
             returns_geom=True,
         )
 
-    def minimum_bounding_radius(self):
-        # Implementation of the abstract method.
-        raise NotImplementedError("This method is not implemented yet.")
+    def minimum_bounding_radius(self) -> pspd.Series:
+        spark_struct = stf.ST_MinimumBoundingRadius(self.spark.column)
+        spark_radius = spark_struct.getField("radius")
+        return self._query_geometry_column(
+            spark_radius,
+            returns_geom=False,
+        )
 
     def minimum_clearance(self):
         # Implementation of the abstract method.
@@ -1067,7 +1075,7 @@ class GeoSeries(GeoFrame, pspd.Series):
 
     def segmentize(self, max_segment_length):
         other_series, extended = self._make_series_of_val(max_segment_length)
-        align = False if extended else align
+        align = not extended
 
         spark_expr = stf.ST_Segmentize(F.col("L"), F.col("R"))
         return self._row_wise_operation(
@@ -1085,9 +1093,17 @@ class GeoSeries(GeoFrame, pspd.Series):
         spark_expr = stf.ST_Force_2D(self.spark.column)
         return self._query_geometry_column(spark_expr, returns_geom=True)
 
-    def force_3d(self, z=0):
-        # Implementation of the abstract method.
-        raise NotImplementedError("This method is not implemented yet.")
+    def force_3d(self, z=0.0) -> "GeoSeries":
+        other_series, extended = self._make_series_of_val(z)
+        align = not extended
+
+        spark_expr = stf.ST_Force3D(F.col("L"), F.col("R"))
+        return self._row_wise_operation(
+            spark_expr,
+            other_series,
+            align=align,
+            returns_geom=True,
+        )
 
     def line_merge(self, directed=False):
         # Implementation of the abstract method.
@@ -1144,8 +1160,8 @@ class GeoSeries(GeoFrame, pspd.Series):
         align = False if extended else align
 
         spark_expr = F.when(
-            (stf.GeometryType(F.col("L")) == "GEOMETRYCOLLECTION")
-            | (stf.GeometryType(F.col("R")) == "GEOMETRYCOLLECTION"),
+            (stf.ST_GeometryType(F.col("L")) == "ST_GeometryCollection")
+            | (stf.ST_GeometryType(F.col("R")) == "ST_GeometryCollection"),
             None,
         ).otherwise(stp.ST_Crosses(F.col("L"), F.col("R")))
         result = self._row_wise_operation(
@@ -2825,11 +2841,13 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         Returns:
             tuple[pspd.Series, bool]:
                 - The series of the value
-                - Whether returned value was a single object extended into a series (useful for row-wise 'align' parameter)
+                - Whether returned value was a extended into a series (useful for row-wise 'align' parameter)
         """
         # generator instead of a in-memory list
         if isinstance(value, GeoDataFrame):
             return value.geometry, False
+        elif isinstance(value, (list, np.ndarray)):
+            return pspd.Series(value), True
         elif not isinstance(value, pspd.Series):
             lst = [value for _ in range(len(self))]
             if isinstance(value, BaseGeometry):

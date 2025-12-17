@@ -2373,6 +2373,21 @@ class functionTestScala
       .toList should contain theSameElementsAs List(0, 1, 1)
   }
 
+  it("Should pass ST_OrientedEnvelope") {
+    val testCases = Seq(
+      ("POLYGON ((0 0, 4 0, 4 2, 0 2, 0 0))", "POLYGON ((0 0, 0 2, 4 2, 4 0, 0 0))"),
+      ("POLYGON ((0 0, 1 0, 5 4, 4 4, 0 0))", "POLYGON ((0 0, 4.5 4.5, 5 4, 0.5 -0.5, 0 0))"),
+      ("POINT (1 2)", "POINT (1 2)"))
+
+    testCases.foreach { case (input, expected) =>
+      val actual = sparkSession
+        .sql(s"SELECT ST_AsText(ST_OrientedEnvelope(ST_GeomFromWKT('$input')))")
+        .first()
+        .getString(0)
+      assert(expected.equals(actual), s"Input: $input, Expected: $expected, Actual: $actual")
+    }
+  }
+
   it("Should pass ST_LineSegments") {
     val baseDf = sparkSession.sql(
       "SELECT ST_GeomFromWKT('LINESTRING(120 140, 60 120, 30 20)') AS line, ST_GeomFromWKT('POLYGON ((0 0, 0 1, 1 0, 0 0))') AS poly")
@@ -2733,6 +2748,8 @@ class functionTestScala
     assert(functionDf.first().get(0) == null)
     functionDf = sparkSession.sql("select ST_MinimumBoundingRadius(null)")
     assert(functionDf.first().get(0) == null)
+    functionDf = sparkSession.sql("select ST_OrientedEnvelope(null)")
+    assert(functionDf.first().get(0) == null)
     functionDf = sparkSession.sql("select ST_LineSubstring(null, 0, 0)")
     assert(functionDf.first().get(0) == null)
     functionDf = sparkSession.sql("select ST_LineInterpolatePoint(null, 0)")
@@ -3031,6 +3048,17 @@ class functionTestScala
       assertEquals(expected, actual)
       assertEquals(expectedDefaultValue, actualDefaultValue)
     }
+  }
+
+  it("should pass ST_Force3D with MultiPolygon containing single polygon") {
+    // Test that a MultiPolygon with a single polygon remains a MultiPolygon after force3D
+    val df = sparkSession.sql(
+      "SELECT ST_AsText(ST_Force3D(ST_GeomFromWKT('MULTIPOLYGON (((0 0, 10 0, 10 10, 0 10, 0 0)))'), 5.0)) AS geom")
+    val actual = df.take(1)(0).get(0).asInstanceOf[String]
+    // Should still be MULTIPOLYGON, not POLYGON
+    assertTrue(actual.startsWith("MULTIPOLYGON"))
+    assertTrue(actual.contains("Z"))
+    assertTrue(actual.contains("5"))
   }
 
   it("Should pass ST_Force3DZ") {

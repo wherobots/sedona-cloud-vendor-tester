@@ -674,6 +674,21 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         df_result = geoseries.to_geoframe().length
         self.check_pd_series_equal(df_result, expected)
 
+        # Ensure M-dimension doesn't break things.
+        s = GeoSeries(
+            [
+                wkt.loads("POINT M (0 0 0)"),
+                wkt.loads("LINESTRING M (0 0 0, 1 1 0)"),
+                wkt.loads("POLYGON M ((0 0 0, 1 0 0, 1 1 0, 0 0 0))"),
+                wkt.loads(
+                    "GEOMETRYCOLLECTION M (POINT M (0 0 0), LINESTRING M (0 0 0, 1 1 0), POLYGON M ((0 0 0, 1 0 0, 1 1 0, 0 0 0)))"
+                ),
+            ]
+        )
+        result = s.length
+        expected = pd.Series([0.000000, 1.414214, 3.414214, 4.828427])
+        self.check_pd_series_equal(result, expected)
+
     def test_is_valid(self):
         geoseries = sgpd.GeoSeries(
             [
@@ -1088,6 +1103,15 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         result = s.to_geoframe().is_closed
         self.check_pd_series_equal(result, expected)
 
+        s = GeoSeries(
+            [
+                wkt.loads("LINESTRING M (0 0 0, 1 1 0, 1 -1 0, 0 0 0)"),
+            ]
+        )
+        result = s.is_closed
+        expected = pd.Series([True])
+        self.check_pd_series_equal(result, expected)
+
     def test_has_z(self):
         s = sgpd.GeoSeries(
             [
@@ -1180,6 +1204,20 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         # Check that GeoDataFrame works too
         df_result = s.to_geoframe().boundary
         self.check_sgpd_equals_gpd(df_result, expected)
+
+        # Ensure M-dimension doesn't break things.
+        s = GeoSeries(
+            [
+                wkt.loads("GEOMETRYCOLLECTION M (POINT M (1 2 3))"),
+            ]
+        )
+        result = s.boundary
+        expected = gpd.GeoSeries(
+            [
+                None,
+            ]
+        )
+        self.check_sgpd_equals_gpd(result, expected)
 
     def test_centroid(self):
         s = sgpd.GeoSeries(
@@ -1309,7 +1347,28 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         self.check_sgpd_equals_gpd(df_result, expected)
 
     def test_minimum_bounding_radius(self):
-        pass
+        s = GeoSeries(
+            [
+                Polygon([(0, 0), (1, 1), (0, 1), (0, 0)]),
+                LineString([(0, 0), (1, 1), (1, 0)]),
+                Point(0, 0),
+            ]
+        )
+
+        expected = pd.Series(
+            [
+                0.707107,  # radius for the square
+                0.707107,  # radius for the line
+                0.000000,  # radius for the point
+            ]
+        )
+
+        result = s.minimum_bounding_radius()
+        self.check_pd_series_equal(result, expected)
+
+        gdf = s.to_geoframe()
+        df_result = gdf.minimum_bounding_radius()
+        self.check_pd_series_equal(df_result, expected)
 
     def test_minimum_clearance(self):
         pass
@@ -1405,6 +1464,24 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         df_result = s.to_geoframe().segmentize(5)
         self.check_sgpd_equals_gpd(df_result, expected)
 
+        # Test array-like input
+        result = s.segmentize(ps.Series([5, 10]))
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (0, 5), (0, 10)]),
+                Polygon(
+                    [
+                        (0, 0),
+                        (10, 0),
+                        (10, 10),
+                        (0, 10),
+                        (0, 0),
+                    ]
+                ),
+            ],
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
     def test_transform(self):
         pass
 
@@ -1443,7 +1520,95 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         self.check_sgpd_equals_gpd(df_result, expected)
 
     def test_force_3d(self):
-        pass
+        # 1. 2D geometries promoted to 3D with default z=0.0
+        s = sgpd.GeoSeries(
+            [
+                Point(1, 2),
+                Point(0.5, 2.5, 2),
+                Point(1, 1, np.nan),
+                LineString([(1, 1), (0, 1), (1, 0)]),
+                Polygon([(0, 0), (0, 10), (10, 10)]),
+                GeometryCollection(
+                    [
+                        Point(1, 1),
+                        LineString([(1, 1), (0, 1), (1, 0)]),
+                    ]
+                ),
+            ]
+        )
+        # Promote 2D to 3D with z=0, keep 3D as is
+        expected = gpd.GeoSeries(
+            [
+                Point(1, 2, 0),
+                Point(0.5, 2.5, 2),
+                Point(1, 1, 0),
+                LineString([(1, 1, 0), (0, 1, 0), (1, 0, 0)]),
+                Polygon([(0, 0, 0), (0, 10, 0), (10, 10, 0), (0, 0, 0)]),
+                GeometryCollection(
+                    [
+                        Point(1, 1, 0),
+                        LineString([(1, 1, 0), (0, 1, 0), (1, 0, 0)]),
+                    ]
+                ),
+            ]
+        )
+        result = s.force_3d()
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # 2. 2D geometries promoted to 3D with scalar z
+        expected = gpd.GeoSeries(
+            [
+                Point(1, 2, 4),
+                Point(0.5, 2.5, 2),
+                Point(1, 1, 4),
+                LineString([(1, 1, 4), (0, 1, 4), (1, 0, 4)]),
+                Polygon([(0, 0, 4), (0, 10, 4), (10, 10, 4), (0, 0, 4)]),
+                GeometryCollection(
+                    [
+                        Point(1, 1, 4),
+                        LineString([(1, 1, 4), (0, 1, 4), (1, 0, 4)]),
+                    ]
+                ),
+            ]
+        )
+        result = s.force_3d(4)
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # 3. Array-like z: use ps.Series
+        z = [0, 2, 2, 3, 4, 5]
+        expected = gpd.GeoSeries(
+            [
+                Point(1, 2, 0),
+                Point(0.5, 2.5, 2),
+                Point(1, 1, 2),
+                LineString([(1, 1, 3), (0, 1, 3), (1, 0, 3)]),
+                Polygon([(0, 0, 4), (0, 10, 4), (10, 10, 4), (0, 0, 4)]),
+                GeometryCollection(
+                    [
+                        Point(1, 1, 5),
+                        LineString([(1, 1, 5), (0, 1, 5), (1, 0, 5)]),
+                    ]
+                ),
+            ]
+        )
+        result = s.force_3d(z)
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # 4. Ensure M and ZM geometries are handled correctly
+        s = sgpd.GeoSeries(
+            [
+                shapely.wkt.loads("POINT M (1 2 3)"),
+                shapely.wkt.loads("POINT ZM (1 2 3 4)"),
+            ]
+        )
+        result = s.force_3d(7.5)
+        expected = gpd.GeoSeries(
+            [
+                shapely.wkt.loads("POINT Z (1 2 7.5)"),
+                shapely.wkt.loads("POINT Z (1 2 3)"),
+            ]
+        )
+        self.check_sgpd_equals_gpd(result, expected)
 
     def test_line_merge(self):
         pass
@@ -1535,6 +1700,21 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         # Check that GeoDataFrame works too
         df_result = s.to_geoframe().crosses(s2, align=False)
         self.check_pd_series_equal(df_result, expected)
+
+        # Sedona ST_Crosses doesn't support GeometryCollection, so it returns NULL for now.
+        # https://github.com/apache/sedona/issues/2417
+        # Once this is resolved, we can update the expected result of this test.
+        # Ensure M-dimension doesn't break things.
+        s = GeoSeries(
+            [
+                wkt.loads("GEOMETRYCOLLECTION M (POINT M (1 2 3))"),
+                wkt.loads("LINESTRING M (0 0 1, 1 1 2)"),
+            ]
+        )
+        line = LineString([(0, 0), (1, 1)])
+        result = s.crosses(line)
+        expected = pd.Series([None, False])
+        self.check_pd_series_equal(result, expected)
 
     def test_disjoint(self):
         pass
