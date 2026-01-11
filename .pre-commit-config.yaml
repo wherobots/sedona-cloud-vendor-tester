@@ -47,6 +47,7 @@ repos:
         files: \.(js|ya?ml)$
         language: node
         additional_dependencies: ['prettier@3.7.4']
+        pass_filenames: false
       - id: maven-spotless-apply
         name: maven spotless apply
         description: automatically formats Java and Scala code using mvn spotless:apply.
@@ -309,6 +310,15 @@ repos:
       - id: gitleaks
         name: run gitleaks
         description: check for secrets with gitleaks
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.20.0
+    hooks:
+      - id: zizmor
+        name: run zizmor
+        description: zizmor is a static analysis tool for GitHub Actions
+        args: [--config=.github/linters/zizmor.yml]
+        files: ^\.github/workflows/.*$
+        types: [yaml]
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: v1.10.0
     hooks:
