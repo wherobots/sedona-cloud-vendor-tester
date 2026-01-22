@@ -28,3 +28,19 @@ rules:
         r-lib/actions/check-r-package: any
         r-lib/actions/setup-r: any
         r-lib/actions/setup-r-dependencies: any
+  # pull_request_target is intentionally used for running tests with secrets on external PRs
+  dangerous-triggers:
+    ignore:
+      - databricks-tester.yml
+      - snowflake-tester.yml
+  # These are low-confidence warnings that we accept
+  artipacked:
+    ignore:
+      - databricks-tester.yml
+      - snowflake-tester.yml
+  excessive-permissions:
+    ignore:
+      - snowflake-tester.yml
+  template-injection:
+    ignore:
+      - databricks-tester.yml
