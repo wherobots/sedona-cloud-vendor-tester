@@ -35,6 +35,7 @@ import org.geotools.referencing.CRS;
 import org.geotools.referencing.operation.projection.ProjectionException;
 import org.junit.Test;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.geom.LinearRing;
 import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 import org.locationtech.jts.io.ParseException;
@@ -529,6 +530,66 @@ public class FunctionsTest extends TestBase {
     Geometry actualResult = Functions.split(geometryCollection, lineString);
 
     assertNull(actualResult);
+  }
+
+  @Test
+  public void splitCircleInto2SemiCircles() throws ParseException {
+    String polygonWkt =
+        "POLYGON ((-117.76405581088967 34.111876749328026, -117.76407506132291 34.11170068822483, "
+            + "-117.76413523652074 34.111531133837936, -117.76423402376724 34.11137460199335, -117.76436762657538 34.11123710803779, "
+            + "-117.76453091060647 34.11112393568514, -117.76471760098879 34.11103943398174, -117.76492052345083 34.11098685019075, "
+            + "-117.76513188000408 34.1109682050154, -117.76534354858369 34.11098421495394, -117.76554739513688 34.11103426476887, "
+            + "-117.76573558617179 34.11111643112786, -117.76590088976099 34.111227556508084, -117.76603695343799 34.11136337052523, "
+            + "-117.76613854831002 34.11151865402651, -117.76620177000793 34.11168743964393, -117.76622418874936 34.111863241103265, "
+            + "-117.76620494274577 34.11203930247842, -117.76614477135817 34.11220885781403, -117.7660459867224 34.11236539113964, "
+            + "-117.76591238492807 34.11250288688306, -117.7657491001595 34.11261606105824, -117.7655624074007 34.11270056434135, "
+            + "-117.76535948128496 34.112753149228745, -117.76514812035703 34.11277179485027, -117.76493644734776 34.112755784639766, "
+            + "-117.76473259698435 34.112705733876126, -117.76454440333869 34.11262356603611, -117.76437909873567 34.11251243886801, "
+            + "-117.76424303579616 34.11237662302835, -117.76414144330062 34.112221337947354, -117.76407822525644 34.11205255123353, "
+            + "-117.76405581088967 34.111876749328026))";
+    String knifeWkt =
+        "LINESTRING (-117.7640751398563 34.111535124121441, -117.76628486838135 34.112204866513046)";
+
+    Geometry polygon = Constructors.geomFromWKT(polygonWkt, 4326);
+    Geometry knife = Constructors.geomFromWKT(knifeWkt, 4326);
+    Geometry resultPolygon = Functions.split(polygon, knife);
+    assertEquals(2, resultPolygon.getNumGeometries());
+
+    double circleArea = polygon.getArea();
+    for (int i = 0; i < resultPolygon.getNumGeometries(); i++) {
+      double actualArea = resultPolygon.getGeometryN(i).getArea();
+      assertEquals(2.0, circleArea / actualArea, 0.1);
+    }
+  }
+
+  @Test
+  public void splitCircleExteriorRingInto2LineStrings() throws ParseException {
+    String polygonWkt =
+        "POLYGON ((-117.76405581088967 34.111876749328026, -117.76407506132291 34.11170068822483, "
+            + "-117.76413523652074 34.111531133837936, -117.76423402376724 34.11137460199335, -117.76436762657538 34.11123710803779, "
+            + "-117.76453091060647 34.11112393568514, -117.76471760098879 34.11103943398174, -117.76492052345083 34.11098685019075, "
+            + "-117.76513188000408 34.1109682050154, -117.76534354858369 34.11098421495394, -117.76554739513688 34.11103426476887, "
+            + "-117.76573558617179 34.11111643112786, -117.76590088976099 34.111227556508084, -117.76603695343799 34.11136337052523, "
+            + "-117.76613854831002 34.11151865402651, -117.76620177000793 34.11168743964393, -117.76622418874936 34.111863241103265, "
+            + "-117.76620494274577 34.11203930247842, -117.76614477135817 34.11220885781403, -117.7660459867224 34.11236539113964, "
+            + "-117.76591238492807 34.11250288688306, -117.7657491001595 34.11261606105824, -117.7655624074007 34.11270056434135, "
+            + "-117.76535948128496 34.112753149228745, -117.76514812035703 34.11277179485027, -117.76493644734776 34.112755784639766, "
+            + "-117.76473259698435 34.112705733876126, -117.76454440333869 34.11262356603611, -117.76437909873567 34.11251243886801, "
+            + "-117.76424303579616 34.11237662302835, -117.76414144330062 34.112221337947354, -117.76407822525644 34.11205255123353, "
+            + "-117.76405581088967 34.111876749328026))";
+    String knifeWkt =
+        "LINESTRING (-117.7640751398563 34.111535124121441, -117.76628486838135 34.112204866513046)";
+
+    Polygon polygon = (Polygon) Constructors.geomFromWKT(polygonWkt, 4326);
+    Geometry knife = Constructors.geomFromWKT(knifeWkt, 4326);
+    Geometry resultLineStrings = Functions.split(polygon.getExteriorRing(), knife);
+    double perimeter = polygon.getExteriorRing().getLength();
+
+    assertEquals(2, resultLineStrings.getNumGeometries());
+    for (int i = 0; i < resultLineStrings.getNumGeometries(); i++) {
+      double length = resultLineStrings.getGeometryN(i).getLength();
+      assertEquals(2.0, perimeter / length, 0.1);
+    }
   }
 
   @Test
@@ -1543,6 +1604,46 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void makePolygonWithValidHoles() {
+    Geometry shell =
+        GEOMETRY_FACTORY.createLineString(coordArray(0, 0, 10, 0, 10, 10, 0, 10, 0, 0));
+    Geometry hole1 = GEOMETRY_FACTORY.createLineString(coordArray(2, 2, 4, 2, 4, 4, 2, 4, 2, 2));
+    Geometry hole2 = GEOMETRY_FACTORY.createLineString(coordArray(6, 6, 8, 6, 8, 8, 6, 8, 6, 6));
+    Geometry result = Functions.makePolygon(shell, new Geometry[] {hole1, hole2});
+    assertNotNull(result);
+    assertEquals(
+        "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2), (6 6, 8 6, 8 8, 6 8, 6 6))",
+        result.toText());
+  }
+
+  @Test
+  public void makePolygonWithHolesOutsideShell() {
+    Geometry shell =
+        GEOMETRY_FACTORY.createLineString(coordArray(0, 0, 10, 0, 10, 10, 0, 10, 0, 0));
+    Geometry hole =
+        GEOMETRY_FACTORY.createLineString(coordArray(20, 20, 30, 20, 30, 30, 20, 30, 20, 20));
+    Geometry result = Functions.makePolygon(shell, new Geometry[] {hole});
+    // Matches PostGIS behavior: polygon is created but is invalid
+    assertNotNull(result);
+    assertFalse(result.isValid());
+    assertEquals(
+        "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (20 20, 30 20, 30 30, 20 30, 20 20))",
+        result.toText());
+  }
+
+  @Test
+  public void makePolygonWithHolesPartiallyOutsideShell() {
+    Geometry shell =
+        GEOMETRY_FACTORY.createLineString(coordArray(0, 0, 10, 0, 10, 10, 0, 10, 0, 0));
+    Geometry hole =
+        GEOMETRY_FACTORY.createLineString(coordArray(-1, -1, 5, -1, 5, 5, -1, 5, -1, -1));
+    Geometry result = Functions.makePolygon(shell, new Geometry[] {hole});
+    // Matches PostGIS behavior: polygon is created but is invalid
+    assertNotNull(result);
+    assertFalse(result.isValid());
+  }
+
+  @Test
   public void distance_empty_geometries() throws ParseException {
     Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(90, 0));
     LineString lineString = GEOMETRY_FACTORY.createLineString(coordArray(0, 0, 0, 90));
@@ -1714,6 +1815,31 @@ public class FunctionsTest extends TestBase {
     GeometryCollection geometryCollection =
         GEOMETRY_FACTORY.createGeometryCollection(new Geometry[] {point, polygon2, polygon3});
     assertEquals(4.036497016235249E11, Spheroid.area(geometryCollection), 0.1);
+
+    // Polygon with hole: ensure interior rings subtract from total area
+    Polygon shell = GEOMETRY_FACTORY.createPolygon(coordArray(0, 0, 0, 10, 10, 10, 10, 0, 0, 0));
+    Polygon hole = GEOMETRY_FACTORY.createPolygon(coordArray(2, 2, 2, 8, 8, 8, 8, 2, 2, 2));
+    Polygon polygonWithHole =
+        GEOMETRY_FACTORY.createPolygon(
+            (LinearRing) shell.getExteriorRing(),
+            new LinearRing[] {(LinearRing) hole.getExteriorRing()});
+    assertTrue(Spheroid.area(polygonWithHole) > 0);
+    assertTrue(Spheroid.area(polygonWithHole) < Spheroid.area(shell));
+  }
+
+  // Temporary regression test for https://github.com/apache/sedona/issues/2603
+  @Test
+  public void spheroidAreaRegressionGH2603() throws ParseException {
+    String wkt =
+        "POLYGON((6.8782696039776 49.2766437532092,6.87823957674903 49.2766222406843,6.87815807078698 49.2765638879958,6.87804125519739 49.2764802462174,6.87799662173375 49.2764482636995,6.87797514117841 49.2764339340827,6.87813462196488 49.2763400751467,6.87818408824614 49.2763110269219,6.87825299096468 49.2762705688469,6.87853657017451 49.2761040516002,6.8786024223574 49.2761481365701,6.87859913601082 49.2761500643444,6.87873887570276 49.2762627881616,6.87878141030736 49.2763020366733,6.8788169319621 49.2763457893589,6.87875164140889 49.2763674403031,6.87876841511752 49.2763927755128,6.87870854199672 49.276408012758,6.87863940411241 49.2764337671641,6.87857096366803 49.2764656966649,6.87848222914642 49.2765181242911,6.8782696039776 49.2766437532092),(6.87850040159497 49.2764227396398,6.87859708638203 49.2763756847604,6.87871844977398 49.2763302705537,6.87867981298025 49.276294071318,6.87863493352534 49.2762569207702,6.87858951083054 49.2762253827861,6.87855281366443 49.276201022011,6.87833112115166 49.2763319631125,6.87842939578059 49.2764016619201,6.87845249629829 49.2763878544337,6.87850040159497 49.2764227396398),(6.87812388117695 49.2764487395748,6.87822630044844 49.276523102708,6.87836942156031 49.2764375161839,6.87826604803956 49.2763642421665,6.87812388117695 49.2764487395748))";
+    double expectedPostgisArea = 1232.39;
+
+    Geometry geom = wktReader.read(wkt);
+    geom.setSRID(4326);
+
+    double actual = Spheroid.area(geom);
+    double delta = Math.max(1e-6, expectedPostgisArea * 1e-3);
+    assertEquals(expectedPostgisArea, actual, delta);
   }
 
   @Test
@@ -3864,6 +3990,48 @@ public class FunctionsTest extends TestBase {
         Functions.geometryTypeWithMeasured(
             GEOMETRY_FACTORY.createGeometryCollection(new Geometry[] {measuredPolygon}));
     assertEquals(expected4, actual4);
+  }
+
+  @Test
+  public void geometryTypeWithMeasuredEmpty() {
+    // Regression test for GH-2390: GeometryType fails on all EMPTY geometries
+    assertEquals("POINT", Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createEmpty(0)));
+    assertEquals(
+        "LINESTRING", Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createLineString()));
+    assertEquals(
+        "POLYGON",
+        Functions.geometryTypeWithMeasured(
+            GEOMETRY_FACTORY.createPolygon(GEOMETRY_FACTORY.createLinearRing())));
+    assertEquals(
+        "MULTIPOINT", Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createMultiPoint()));
+    assertEquals(
+        "MULTILINESTRING",
+        Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createMultiLineString()));
+    assertEquals(
+        "MULTIPOLYGON", Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createMultiPolygon()));
+    assertEquals(
+        "GEOMETRYCOLLECTION",
+        Functions.geometryTypeWithMeasured(GEOMETRY_FACTORY.createGeometryCollection()));
+  }
+
+  @Test
+  public void setSRIDEmptyGeometries() throws ParseException {
+    // Regression test for GH-2403: SetSRID doesn't work on POLYGON EMPTY
+    String[] emptyWkts = {
+      "POINT EMPTY",
+      "LINESTRING EMPTY",
+      "POLYGON EMPTY",
+      "MULTIPOINT EMPTY",
+      "MULTILINESTRING EMPTY",
+      "MULTIPOLYGON EMPTY",
+      "GEOMETRYCOLLECTION EMPTY"
+    };
+    for (String wkt : emptyWkts) {
+      Geometry geom = Constructors.geomFromWKT(wkt, 0);
+      Geometry result = Functions.setSRID(geom, 4236);
+      assertEquals("SRID should be set for " + wkt, 4236, result.getSRID());
+      assertTrue("Result should be empty for " + wkt, result.isEmpty());
+    }
   }
 
   @Test
