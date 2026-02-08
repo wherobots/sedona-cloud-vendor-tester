@@ -617,7 +617,7 @@ POINT ZM(1 1 1 1)
 
 ## ST_Azimuth
 
-Introduction: Returns Azimuth for two given points in radians null otherwise.
+Introduction: Returns Azimuth for two given points in radians. Returns null if the two points are identical.
 
 Format: `ST_Azimuth(pointA: Point, pointB: Point)`
 
@@ -2135,6 +2135,15 @@ Introduction: Return the intersection geometry of A and B
 Format: `ST_Intersection (A: Geometry, B: Geometry)`
 
 Since: `v1.5.0`
+
+!!!note
+    If you encounter a `TopologyException` with the message "found non-noded intersection", try enabling the OverlayNG algorithm by adding the following JVM flag:
+
+    ```
+    -Djts.overlay=ng
+    ```
+
+    The OverlayNG algorithm is more robust than the legacy overlay implementation in JTS and handles many edge cases that would otherwise cause errors.
 
 Example:
 

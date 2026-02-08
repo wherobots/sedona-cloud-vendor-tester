@@ -204,11 +204,14 @@ public class Functions {
     return Math.sqrt(closest);
   }
 
-  public static double azimuth(Geometry left, Geometry right) {
+  public static Double azimuth(Geometry left, Geometry right) {
     Coordinate leftCoordinate = left.getCoordinate();
     Coordinate rightCoordinate = right.getCoordinate();
     double deltaX = rightCoordinate.x - leftCoordinate.x;
     double deltaY = rightCoordinate.y - leftCoordinate.y;
+    if (deltaX == 0 && deltaY == 0) {
+      return null;
+    }
     double azimuth = Math.atan2(deltaX, deltaY);
     return azimuth < 0 ? azimuth + (2 * Math.PI) : azimuth;
   }
@@ -668,40 +671,40 @@ public class Functions {
     return max == -Double.MAX_VALUE ? null : max;
   }
 
-  public static double xMin(Geometry geometry) {
+  public static Double xMin(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double min = Double.MAX_VALUE;
     for (int i = 0; i < points.length; i++) {
       min = Math.min(points[i].getX(), min);
     }
-    return min;
+    return min == Double.MAX_VALUE ? null : min;
   }
 
-  public static double xMax(Geometry geometry) {
+  public static Double xMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
     for (int i = 0; i < points.length; i++) {
       max = Math.max(points[i].getX(), max);
     }
-    return max;
+    return max == -Double.MAX_VALUE ? null : max;
   }
 
-  public static double yMin(Geometry geometry) {
+  public static Double yMin(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double min = Double.MAX_VALUE;
     for (int i = 0; i < points.length; i++) {
       min = Math.min(points[i].getY(), min);
     }
-    return min;
+    return min == Double.MAX_VALUE ? null : min;
   }
 
-  public static double yMax(Geometry geometry) {
+  public static Double yMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
     for (int i = 0; i < points.length; i++) {
       max = Math.max(points[i].getY(), max);
     }
-    return max;
+    return max == -Double.MAX_VALUE ? null : max;
   }
 
   public static Double zMax(Geometry geometry) {

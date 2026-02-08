@@ -684,7 +684,11 @@ class TestPredicateJoin(TestBase):
 
     def test_st_azimuth(self):
         sample_points = create_sample_points(20)
-        sample_pair_points = [[el, sample_points[1]] for el in sample_points]
+        sample_pair_points = [
+            [el, sample_points[1]]
+            for el in sample_points
+            if not el.equals(sample_points[1])
+        ]
         schema = StructType(
             [
                 StructField("geomA", GeometryType(), True),
@@ -700,7 +704,6 @@ class TestPredicateJoin(TestBase):
 
         expected_result = [
             240.0133139011053,
-            0.0,
             270.0,
             286.8042682202057,
             315.0,
@@ -722,6 +725,12 @@ class TestPredicateJoin(TestBase):
         ]
 
         assert st_azimuth_result == expected_result
+
+        # ST_Azimuth should return null for identical points
+        identical_result = self.spark.sql(
+            "SELECT ST_Azimuth(ST_Point(1.0, 1.0), ST_Point(1.0, 1.0))"
+        ).collect()
+        assert identical_result[0][0] is None
 
         azimuth = self.spark.sql(
             """SELECT ST_Azimuth(ST_Point(25.0, 45.0), ST_Point(75.0, 100.0)) AS degA_B,
@@ -2230,14 +2239,12 @@ class TestPredicateJoin(TestBase):
         assert cell_ids is None
 
     def test_st_s2_to_geom(self):
-        df = self.spark.sql(
-            """
+        df = self.spark.sql("""
         SELECT
             ST_Intersects(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), ST_S2ToGeom(ST_S2CellIDs(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), 10))[0]),
             ST_Intersects(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), ST_S2ToGeom(ST_S2CellIDs(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), 10))[1]),
             ST_Intersects(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), ST_S2ToGeom(ST_S2CellIDs(ST_GeomFromWKT('POLYGON ((0.1 0.1, 0.5 0.1, 1 0.3, 1 1, 0.1 1, 0.1 0.1))'), 10))[2])
-        """
-        )
+        """)
         res1, res2, res3 = df.take(1)[0]
         assert res1 and res2 and res3
 
@@ -2264,20 +2271,17 @@ class TestPredicateJoin(TestBase):
         assert df.take(1)[0][0] == 78
 
     def test_st_h3_kring(self):
-        df = self.spark.sql(
-            """
+        df = self.spark.sql("""
         SELECT
             ST_H3KRing(ST_H3CellIDs(ST_GeomFromWKT('POINT(1 2)'), 8, true)[0], 1, true) exactRings,
             ST_H3KRing(ST_H3CellIDs(ST_GeomFromWKT('POINT(1 2)'), 8, true)[0], 1, false) allRings,
             ST_H3CellIDs(ST_GeomFromWKT('POINT(1 2)'), 8, true) original_cells
-        """
-        )
+        """)
         exact_rings, all_rings, original_cells = df.take(1)[0]
         assert set(exact_rings + original_cells) == set(all_rings)
 
     def test_st_h3_togeom(self):
-        df = self.spark.sql(
-            """
+        df = self.spark.sql("""
         SELECT
             ST_Intersects(
                 ST_H3ToGeom(ST_H3CellIDs(ST_GeomFromText('POLYGON((-1 0, 1 0, 0 0, 0 1, -1 0))'), 6, true))[10],
@@ -2291,8 +2295,7 @@ class TestPredicateJoin(TestBase):
                 ST_H3ToGeom(ST_H3CellIDs(ST_GeomFromText('POLYGON((-1 0, 1 0, 0 0, 0 1, -1 0))'), 6, false))[50],
                 ST_GeomFromText('POLYGON((-1 0, 1 0, 0 0, 0 1, -1 0))')
             )
-        """
-        )
+        """)
         res1, res2, res3 = df.take(1)[0]
         assert res1 and res2 and res3
 

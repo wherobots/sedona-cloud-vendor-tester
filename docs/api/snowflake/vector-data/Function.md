@@ -457,7 +457,7 @@ FROM polygondf
 
 ## ST_Azimuth
 
-Introduction: Returns Azimuth for two given points in radians null otherwise.
+Introduction: Returns Azimuth for two given points in radians. Returns null if the two points are identical.
 
 Format: `ST_Azimuth(pointA: Point, pointB: Point)`
 
@@ -1534,6 +1534,13 @@ Output: `LINESTRING (1 1, 2 1, 2 2, 1 2, 1 1)`
 Introduction: Return the intersection geometry of A and B
 
 Format: `ST_Intersection (A:geometry, B:geometry)`
+
+!!!note
+    If you encounter a `TopologyException` with the message "found non-noded intersection", this is a known issue with the legacy overlay implementation in JTS. The OverlayNG algorithm resolves this. To enable it, add the following JVM flag:
+
+    ```
+    -Djts.overlay=ng
+    ```
 
 SQL example:
 

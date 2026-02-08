@@ -809,6 +809,25 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void envelopeEmptyGeometry() throws ParseException {
+    // ST_Envelope of EMPTY should return same-type EMPTY (matching PostGIS behavior)
+    Geometry emptyLineString = Constructors.geomFromWKT("LINESTRING EMPTY", 0);
+    Geometry result = Functions.envelope(emptyLineString);
+    assertTrue(result.isEmpty());
+    assertEquals("LineString", result.getGeometryType());
+
+    Geometry emptyPolygon = Constructors.geomFromWKT("POLYGON EMPTY", 0);
+    result = Functions.envelope(emptyPolygon);
+    assertTrue(result.isEmpty());
+    assertEquals("Polygon", result.getGeometryType());
+
+    Geometry emptyPoint = Constructors.geomFromWKT("POINT EMPTY", 0);
+    result = Functions.envelope(emptyPoint);
+    assertTrue(result.isEmpty());
+    assertEquals("Point", result.getGeometryType());
+  }
+
+  @Test
   public void envelopeAndCentroidSRID() throws ParseException {
     Geometry geom = Constructors.geomFromWKT("POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))", 3857);
     Geometry envelope = Functions.envelope(geom);
@@ -3618,6 +3637,62 @@ public class FunctionsTest extends TestBase {
     String expected = "LINESTRING (10 5, 10 5)";
     String actual = Functions.boundingDiagonal(point).toText();
     assertEquals(expected, actual);
+  }
+
+  @Test
+  public void azimuthNorth() {
+    Point a = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 0));
+    Point b = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 1));
+    Double result = Functions.azimuth(a, b);
+    assertNotNull(result);
+    assertEquals(0.0, result, 1e-9);
+  }
+
+  @Test
+  public void azimuthSouth() {
+    Point a = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 25));
+    Point b = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 0));
+    Double result = Functions.azimuth(a, b);
+    assertNotNull(result);
+    assertEquals(Math.PI, result, 1e-9);
+  }
+
+  @Test
+  public void azimuthIdenticalPoints() {
+    Point a = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 25));
+    Point b = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 25));
+    Double result = Functions.azimuth(a, b);
+    assertNull(result);
+  }
+
+  @Test
+  public void boundsEmptyGeometryReturnsNull() {
+    Geometry emptyPoint = GEOMETRY_FACTORY.createPoint();
+    assertNull(Functions.xMin(emptyPoint));
+    assertNull(Functions.xMax(emptyPoint));
+    assertNull(Functions.yMin(emptyPoint));
+    assertNull(Functions.yMax(emptyPoint));
+
+    Geometry emptyPolygon = GEOMETRY_FACTORY.createPolygon();
+    assertNull(Functions.xMin(emptyPolygon));
+    assertNull(Functions.xMax(emptyPolygon));
+    assertNull(Functions.yMin(emptyPolygon));
+    assertNull(Functions.yMax(emptyPolygon));
+
+    Geometry emptyLineString = GEOMETRY_FACTORY.createLineString();
+    assertNull(Functions.xMin(emptyLineString));
+    assertNull(Functions.xMax(emptyLineString));
+    assertNull(Functions.yMin(emptyLineString));
+    assertNull(Functions.yMax(emptyLineString));
+  }
+
+  @Test
+  public void boundsNonEmptyGeometry() throws ParseException {
+    Geometry polygon = Constructors.geomFromWKT("POLYGON ((-1 -11, 0 10, 1 11, 2 12, -1 -11))", 0);
+    assertEquals(-1.0, Functions.xMin(polygon), 1e-9);
+    assertEquals(2.0, Functions.xMax(polygon), 1e-9);
+    assertEquals(-11.0, Functions.yMin(polygon), 1e-9);
+    assertEquals(12.0, Functions.yMax(polygon), 1e-9);
   }
 
   @Test
