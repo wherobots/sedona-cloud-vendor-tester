@@ -22,10 +22,14 @@
 Introduction: Returns an array of expanded forms of the input address string. This is backed by the [libpostal](https://github.com/openvenues/libpostal) library's address expanding functionality.
 
 !!!Note
-    Jpostal requires at least 2 GB of free disk space to store the data files used for address parsing and expanding. The data files are downloaded automatically when the function is called for the first time.
+    Jpostal requires at least 2 GB of free disk space to store the data files used for address parsing and expanding. By default, the data files are downloaded automatically to a temporary directory (`<java.io.tmpdir>/libpostal/`, e.g. `/tmp/libpostal/` on Linux/macOS) when the function is called for the first time.
 
 !!!Note
-    The version of jpostal installed with this package only supports Linux and MacOS. If you are using Windows, you will need to install libjpostal and libpostal manually and ensure that they are available in your `java.library.path`.
+    The version of jpostal installed with this package only supports Linux and macOS. If you are using Windows, you will need to install libjpostal and libpostal manually and ensure that they are available in your `java.library.path`.
+
+The data directory can be configured via `spark.sedona.libpostal.dataDir`. You can point it to a remote filesystem path (HDFS, S3, GCS, ABFS, etc.) such as `hdfs:///data/libpostal/` or `s3a://my-bucket/libpostal/`. When using a remote path, you must distribute the data to all executors before running queries by calling `sc.addFile("hdfs:///data/libpostal/", recursive=True)` (PySpark) or `sc.addFile("hdfs:///data/libpostal/", recursive = true)` (Scala). In this remote-URI mode, the automatic internet download performed by jpostal is disabled, so the remote directory must already contain the libpostal model files. For local filesystem paths, jpostal's download-if-needed behavior remains enabled.
+
+To prepare the libpostal data for a remote filesystem, first download it to a local machine by following the [libpostal installation instructions](https://github.com/openvenues/libpostal#installation-maclinux). After installation, the data files will be in the directory you specified during setup (commonly `/tmp/libpostal/`). Then upload them to your remote storage.
 
 Format: `ExpandAddress (address: String)`
 
@@ -48,10 +52,14 @@ Output:
 Introduction: Returns an array of the components (e.g. street, postal code) of the input address string. This is backed by the [libpostal](https://github.com/openvenues/libpostal) library's address parsing functionality.
 
 !!!Note
-    Jpostal requires at least 2 GB of free disk space to store the data files used for address parsing and expanding. The data files are downloaded automatically when the library is initialized.
+    Jpostal requires at least 2 GB of free disk space to store the data files used for address parsing and expanding. By default, the data files are downloaded automatically to a temporary directory (`<java.io.tmpdir>/libpostal/`, e.g. `/tmp/libpostal/` on Linux/macOS) when the library is initialized.
 
 !!!Note
-    The version of jpostal installed with this package only supports Linux and MacOS. If you are using Windows, you will need to install libjpostal and libpostal manually and ensure that they are available in your `java.library.path`.
+    The version of jpostal installed with this package only supports Linux and macOS. If you are using Windows, you will need to install libjpostal and libpostal manually and ensure that they are available in your `java.library.path`.
+
+The data directory can be configured via `spark.sedona.libpostal.dataDir`. You can point it to a remote filesystem path (HDFS, S3, GCS, ABFS, etc.) such as `hdfs:///data/libpostal/` or `s3a://my-bucket/libpostal/`. When using a remote path, you must distribute the data to all executors before running queries by calling `sc.addFile("hdfs:///data/libpostal/", recursive=True)` (PySpark) or `sc.addFile("hdfs:///data/libpostal/", recursive = true)` (Scala). In this remote-URI mode, the automatic internet download performed by jpostal is disabled, so the remote directory must already contain the libpostal model files. For local filesystem paths, jpostal's download-if-needed behavior remains enabled.
+
+To prepare the libpostal data for a remote filesystem, first download it to a local machine by following the [libpostal installation instructions](https://github.com/openvenues/libpostal#installation-maclinux). After installation, the data files will be in the directory you specified during setup (commonly `/tmp/libpostal/`). Then upload them to your remote storage.
 
 Format: `ParseAddress (address: String)`
 
@@ -4640,61 +4648,14 @@ MULTIPOLYGON (((-2 -3, -3 -3, -3 3, -2 3, -2 -3)), ((3 -3, 3 3, 4 3, 4 -3, 3 -3)
 
 Introduction:
 
-Transform the Spatial Reference System / Coordinate Reference System of A, from SourceCRS to TargetCRS. For SourceCRS and TargetCRS, WKT format is also available since `v1.3.1`. Since `v1.5.1`, if the `SourceCRS` is not specified, CRS will be fetched from the geometry using [ST_SRID](#st_srid).
+Transform the Spatial Reference System / Coordinate Reference System of A, from SourceCRS to TargetCRS. If the `SourceCRS` is not specified, CRS will be fetched from the geometry using [ST_SRID](#st_srid).
 
-**Lon/Lat Order in the input geometry**
+Since `v1.9.0`, Sedona supports multiple CRS formats including EPSG codes, WKT1, WKT2, PROJ strings, and PROJJSON. Grid files for high-accuracy datum transformations are also supported.
 
-If the input geometry is in lat/lon order, it might throw an error such as `too close to pole`, `latitude or longitude exceeded limits`, or give unexpected results.
-You need to make sure that the input geometry is in lon/lat order. If the input geometry is in lat/lon order, you can use ==ST_FlipCoordinates== to swap X and Y.
-
-**Lon/Lat Order in the source and target CRS**
-
-Sedona will make sure the source and target CRS to be in lon/lat order. If the source CRS or target CRS is in lat/lon order, these CRS will be swapped to lon/lat order.
-
-**CRS code**
-
-The CRS code is the code of the CRS in the official EPSG database (https://epsg.org/) in the format of `EPSG:XXXX`. A community tool [EPSG.io](https://epsg.io/) can help you quick identify a CRS code. For example, the code of WGS84 is `EPSG:4326`.
-
-**WKT format**
-
-You can also use OGC WKT v1 format to specify the source CRS and target CRS. An example OGC WKT v1 CRS of `EPGS:3857` is as follows:
-
-```
-PROJCS["WGS 84 / Pseudo-Mercator",
-    GEOGCS["WGS 84",
-        DATUM["WGS_1984",
-            SPHEROID["WGS 84",6378137,298.257223563,
-                AUTHORITY["EPSG","7030"]],
-            AUTHORITY["EPSG","6326"]],
-        PRIMEM["Greenwich",0,
-            AUTHORITY["EPSG","8901"]],
-        UNIT["degree",0.0174532925199433,
-            AUTHORITY["EPSG","9122"]],
-        AUTHORITY["EPSG","4326"]],
-    PROJECTION["Mercator_1SP"],
-    PARAMETER["central_meridian",0],
-    PARAMETER["scale_factor",1],
-    PARAMETER["false_easting",0],
-    PARAMETER["false_northing",0],
-    UNIT["metre",1,
-        AUTHORITY["EPSG","9001"]],
-    AXIS["Easting",EAST],
-    AXIS["Northing",NORTH],
-    EXTENSION["PROJ4","+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs"],
-    AUTHORITY["EPSG","3857"]]
-```
-
-!!!note
-    By default, this function uses lon/lat order since `v1.5.0`. Before, it used lat/lon order.
-
-!!!note
-    By default, ==ST_Transform== follows the `lenient` mode which tries to fix issues by itself. You can append a boolean value at the end to enable the `strict` mode. In `strict` mode, ==ST_Transform== will throw an error if it finds any issue.
+!!!tip
+    For comprehensive details on supported CRS formats, grid file usage, and more examples, see [CRS Transformation](CRS-Transformation.md).
 
 Format:
-
-```
-ST_Transform (A: Geometry, SourceCRS: String, TargetCRS: String, lenientMode: Boolean)
-```
 
 ```
 ST_Transform (A: Geometry, SourceCRS: String, TargetCRS: String)
@@ -4710,10 +4671,6 @@ SQL Example
 
 ```sql
 SELECT ST_AsText(ST_Transform(ST_GeomFromText('POLYGON((170 50,170 72,-130 72,-130 50,170 50))'),'EPSG:4326', 'EPSG:32649'))
-```
-
-```sql
-SELECT ST_AsText(ST_Transform(ST_GeomFromText('POLYGON((170 50,170 72,-130 72,-130 50,170 50))'),'EPSG:4326', 'EPSG:32649', false))
 ```
 
 Output:

@@ -18,7 +18,7 @@
  */
 package org.apache.spark.sql.sedona_sql.expressions
 
-import org.apache.sedona.common.{Functions, FunctionsGeoTools}
+import org.apache.sedona.common.{Functions, FunctionsGeoTools, FunctionsProj4}
 import org.apache.sedona.common.sphere.{Haversine, Spheroid}
 import org.apache.sedona.common.utils.{InscribedCircle, ValidDetail}
 import org.apache.sedona.core.utils.SedonaConf
@@ -32,6 +32,7 @@ import org.apache.spark.sql.sedona_sql.expressions.implicits._
 import org.apache.spark.sql.types._
 import org.locationtech.jts.algorithm.MinimumBoundingCircle
 import org.locationtech.jts.geom._
+import org.locationtech.jts.geom.Geometry
 import org.apache.spark.sql.sedona_sql.expressions.InferrableFunctionConverter._
 import org.apache.spark.sql.sedona_sql.expressions.LibPostalUtils.{getExpanderFromConf, getParserFromConf}
 import org.apache.spark.unsafe.types.UTF8String
@@ -292,16 +293,68 @@ private[apache] case class ST_Centroid(inputExpressions: Seq[Expression])
  * Given a geometry, sourceEPSGcode, and targetEPSGcode, convert the geometry's Spatial Reference
  * System / Coordinate Reference System.
  *
+ * The CRS transformation backend is controlled by the `spark.sedona.crs.geotools` config:
+ *   - `none`: Use proj4sedona for all vector transformations
+ *   - `raster` (default): Use proj4sedona for vector, GeoTools for raster
+ *   - `all`: Use GeoTools for everything (legacy behavior)
+ *
+ * Note: For the 4-argument version with lenient parameter, proj4sedona ignores the lenient
+ * parameter (it always performs strict transformation). GeoTools uses the lenient parameter.
+ *
+ * The default fallback (when config cannot be read) is proj4sedona, ensuring consistent behavior
+ * during Spark's query optimization phases like constant folding.
+ *
  * @param inputExpressions
+ * @param useGeoTools
  */
-private[apache] case class ST_Transform(inputExpressions: Seq[Expression])
+private[apache] case class ST_Transform(inputExpressions: Seq[Expression], useGeoTools: Boolean)
     extends InferredExpression(
-      inferrableFunction4(FunctionsGeoTools.transform),
-      inferrableFunction3(FunctionsGeoTools.transform),
-      inferrableFunction2(FunctionsGeoTools.transform)) {
+      inferrableFunction4(FunctionsProj4.transform),
+      inferrableFunction3(FunctionsProj4.transform),
+      inferrableFunction2(FunctionsProj4.transform)) {
+
+  def this(inputExpressions: Seq[Expression]) {
+    // We decide whether to use GeoTools based on active session config.
+    // SparkSession may not be available on executors, so we need to
+    // construct ST_Transform on driver. useGeoTools will be passed down
+    // to executors through object serialization/deserialization.
+    this(inputExpressions, ST_Transform.useGeoTools())
+  }
+
+  // Define proj4sedona function overloads (2, 3, 4-arg versions)
+  // Note: 4-arg version ignores the lenient parameter
+  private lazy val proj4Functions: Seq[InferrableFunction] = Seq(
+    inferrableFunction4(FunctionsProj4.transform),
+    inferrableFunction3(FunctionsProj4.transform),
+    inferrableFunction2(FunctionsProj4.transform))
+
+  // Define GeoTools function overloads (2, 3, 4-arg versions)
+  private lazy val geoToolsFunctions: Seq[InferrableFunction] = Seq(
+    inferrableFunction4(FunctionsGeoTools.transform),
+    inferrableFunction3(FunctionsGeoTools.transform),
+    inferrableFunction2(FunctionsGeoTools.transform))
+
+  override lazy val f: InferrableFunction = {
+    // Check config to decide between proj4sedona and GeoTools
+    // Note: 4-arg lenient parameter is ignored by proj4sedona
+    val candidateFunctions = if (useGeoTools) geoToolsFunctions else proj4Functions
+    FunctionResolver.resolveFunction(inputExpressions, candidateFunctions)
+  }
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
+  }
+}
+
+object ST_Transform {
+  private def useGeoTools(): Boolean = {
+    try {
+      SedonaConf.fromActiveSession().getCRSTransformMode.useGeoToolsForVector()
+    } catch {
+      case _: Exception =>
+        // If no active session, fall back to default (proj4sedona)
+        false
+    }
   }
 }
 
@@ -341,9 +394,9 @@ private[apache] case class ST_IsValidDetail(children: Seq[Expression])
 
   override def inputTypes: Seq[AbstractDataType] = {
     if (nArgs == 2) {
-      Seq(GeometryUDT, IntegerType)
+      Seq(GeometryUDT(), IntegerType)
     } else if (nArgs == 1) {
-      Seq(GeometryUDT)
+      Seq(GeometryUDT())
     } else {
       throw new IllegalArgumentException(s"Invalid number of arguments: $nArgs")
     }
@@ -387,7 +440,7 @@ private[apache] case class ST_IsValidDetail(children: Seq[Expression])
   override def dataType: DataType = new StructType()
     .add("valid", BooleanType, nullable = false)
     .add("reason", StringType, nullable = true)
-    .add("location", GeometryUDT, nullable = true)
+    .add("location", GeometryUDT(), nullable = true)
 }
 
 private[apache] case class ST_IsValidTrajectory(inputExpressions: Seq[Expression])
@@ -683,7 +736,7 @@ private[apache] case class ST_MinimumBoundingRadius(inputExpressions: Seq[Expres
 
   override def dataType: DataType = DataTypes.createStructType(
     Array(
-      DataTypes.createStructField("center", GeometryUDT, false),
+      DataTypes.createStructField("center", GeometryUDT(), false),
       DataTypes.createStructField("radius", DataTypes.DoubleType, false)))
 
   override def children: Seq[Expression] = inputExpressions
@@ -1016,7 +1069,7 @@ private[apache] case class ST_SubDivideExplode(children: Seq[Expression])
 
   override def elementSchema: StructType = {
     new StructType()
-      .add("geom", GeometryUDT, true)
+      .add("geom", GeometryUDT(), true)
   }
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
@@ -1135,8 +1188,8 @@ private[apache] case class ST_MaximumInscribedCircle(children: Seq[Expression])
   override def nullable: Boolean = true
 
   override def dataType: DataType = new StructType()
-    .add("center", GeometryUDT, nullable = false)
-    .add("nearest", GeometryUDT, nullable = false)
+    .add("center", GeometryUDT(), nullable = false)
+    .add("nearest", GeometryUDT(), nullable = false)
     .add("radius", DoubleType, nullable = false)
 }
 
@@ -1640,13 +1693,13 @@ private[apache] case class ST_GeneratePoints(inputExpressions: Seq[Expression], 
 
   override def nullable: Boolean = true
 
-  override def dataType: DataType = GeometryUDT
+  override def dataType: DataType = GeometryUDT()
 
   override def inputTypes: Seq[AbstractDataType] = {
     if (nArgs == 3) {
-      Seq(GeometryUDT, IntegerType, IntegerType)
+      Seq(GeometryUDT(), IntegerType, IntegerType)
     } else if (nArgs == 2) {
-      Seq(GeometryUDT, IntegerType)
+      Seq(GeometryUDT(), IntegerType)
     } else {
       throw new IllegalArgumentException(s"Invalid number of arguments: $nArgs")
     }

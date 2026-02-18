@@ -251,6 +251,7 @@ repos:
             \.prettierignore|
             \.prettierrc|
             \.shellcheckrc|
+            \.github/linters/\.clang-format|
             \.github/CODEOWNERS|
             .*/\.gitignore|
             tools/maven/scalafmt\.conf
@@ -287,7 +288,7 @@ repos:
       - id: clang-format
         name: run clang-format
         description: format C files with clang-format
-        args: [--style=file:.github/linters/.clang-format]
+        args: ['--style=file:.github/linters/.clang-format']
         types_or: [c]
   - repo: https://github.com/PyCQA/bandit
     rev: 1.9.3
@@ -497,3 +498,11 @@ repos:
         name: run blacken-docs
         description: run `black` on python code blocks in documentation files
         additional_dependencies: [black==26.1.0]
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 3.6.0
+    hooks:
+      - id: editorconfig-checker
+        name: run editorconfig-checker
+        description: a tool to verify that your files are in harmony with your .editorconfig
+        exclude: ^docs/image/.*$|^R/man/.*\.Rd$|^spark/common/src/test/resources/.*$
+        alias: ec
