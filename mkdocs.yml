@@ -24,23 +24,24 @@ nav:
   - SedonaSpark:
       - Home: sedonaspark.md
       - Install:
-          - Install Sedona Scala/Java: setup/install-scala.md
-          - Install Sedona Python: setup/install-python.md
-          - Install Sedona R: api/rdocs
-          - Sedona Python: api/pydocs
-          - Install Sedona-Zeppelin: setup/zeppelin.md
-          - Play Sedona in Docker: setup/docker.md
-          - Install on Wherobots: setup/wherobots.md
-          - Install on Databricks: setup/databricks.md
-          - Install on AWS EMR: setup/emr.md
-          - Install on AWS Glue: setup/glue.md
-          - Install on Microsoft Fabric: setup/fabric.md
-          - Set up Spark cluster manually: setup/cluster.md
-          - Install on Azure Synapse Analytics: setup/azure-synapse-analytics.md
           - Overview: setup/overview.md
           - Modules: setup/modules.md
           - Language wrappers: setup/platform.md
           - Maven Central coordinate: setup/maven-coordinates.md
+          - Use Sedona in Docker: setup/docker.md
+          - Install Sedona in your local Spark cluster:
+              - Install Sedona Scala/Java: setup/install-scala.md
+              - Install Sedona Python: setup/install-python.md
+              - Install Sedona R: api/rdocs
+              - Install Sedona-Zeppelin: setup/zeppelin.md
+              - Set up Spark cluster manually: setup/cluster.md
+          - Cloud platforms:
+              - Install on Wherobots: setup/wherobots.md
+              - Install on Databricks: setup/databricks.md
+              - Install on AWS EMR: setup/emr.md
+              - Install on AWS Glue: setup/glue.md
+              - Install on Microsoft Fabric: setup/fabric.md
+              - Install on Azure Synapse Analytics: setup/azure-synapse-analytics.md
       - Programming Guide:
           - Spatial DataFrame / SQL app: tutorial/sql.md
           - Raster DataFrame / SQL app: tutorial/raster.md
@@ -72,16 +73,8 @@ nav:
           - SQL:
               - Quick start: api/sql/Overview.md
               - Vector data:
-                  - Geometry type:
-                      - Constructor: api/sql/Constructor.md
-                      - Function: api/sql/Function.md
-                      - Predicate: api/sql/Predicate.md
-                      - Aggregate function: api/sql/AggregateFunction.md
-                  - Geography type:
-                      - Constructor: api/sql/geography/Constructor.md
-                      - Function: api/sql/geography/Function.md
-                      - Predicate: api/sql/geography/Predicate.md
-                      - Aggregate function: api/sql/geography/AggregateFunction.md
+                  - Geometry Functions: api/sql/Geometry-Functions.md
+                  - Geography Functions: api/sql/geography/Geography-Functions.md
                   - DataFrame Style functions: api/sql/DataFrameAPI.md
                   - Query optimization: api/sql/Optimizer.md
                   - CRS Transformation: api/sql/CRS-Transformation.md
@@ -92,12 +85,8 @@ nav:
                       - SedonaPyDeck: api/sql/Visualization-SedonaPyDeck.md
                       - SedonaKepler: api/sql/Visualization-SedonaKepler.md
               - Raster data:
-                  - Raster loader: api/sql/Raster-loader.md
-                  - Raster aggregates: api/sql/Raster-aggregate-function.md
-                  - Raster writer: api/sql/Raster-writer.md
-                  - Raster operators: api/sql/Raster-operators.md
+                  - Raster Functions: api/sql/Raster-Functions.md
                   - Raster map algebra: api/sql/Raster-map-algebra.md
-                  - Raster visualization: api/sql/Raster-visualizer.md
                   - Raster affine transformation: api/sql/Raster-affine-transformation.md
               - Parameter: api/sql/Parameter.md
           - RDD (core):
@@ -127,10 +116,7 @@ nav:
       - API:
           - SQL:
               - Overview (Flink): api/flink/Overview.md
-              - Constructor (Flink): api/flink/Constructor.md
-              - Function (Flink): api/flink/Function.md
-              - Aggregator (Flink): api/flink/Aggregator.md
-              - Predicate (Flink): api/flink/Predicate.md
+              - Geometry Functions: api/flink/Geometry-Functions.md
 
   - SedonaSnow:
       - Home: sedonasnow.md
@@ -141,10 +127,7 @@ nav:
       - API:
           - SQL:
               - Overview (Snowflake): api/snowflake/vector-data/Overview.md
-              - Constructor (Snowflake): api/snowflake/vector-data/Constructor.md
-              - Function (Snowflake): api/snowflake/vector-data/Function.md
-              - Aggregate Function (Snowflake): api/snowflake/vector-data/AggregateFunction.md
-              - Predicate (Snowflake): api/snowflake/vector-data/Predicate.md
+              - Geometry Functions: api/snowflake/vector-data/Geometry-Functions.md
   - SpatialBench: 'https://sedona.apache.org/spatialbench/'
   - Blog: blog/index.md
   - Community:
@@ -182,7 +165,7 @@ theme:
   palette:
     primary: 'deep orange'
     accent: 'green'
-  favicon: image/sedona_logo_symbol.png
+  favicon: favicon.ico
   logo: image/logo.svg
   icon:
     logo: fontawesome/solid/earth-americas

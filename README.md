@@ -24,7 +24,7 @@
 [![Docs build](https://github.com/apache/sedona/actions/workflows/docs.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/docs.yml)
 [![Example project build](https://github.com/apache/sedona/actions/workflows/example.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/example.yml)
 [![First Interaction Workflow Status](https://github.com/apache/sedona/actions/workflows/first-interaction.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/first-interaction.yml)
-[![Labeler Workflow Status](https://github.com/apache/sedona/actions/workflows/labeler.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/labeler.yml)
+[![Manual Hooks Workflow Status](https://github.com/apache/sedona/actions/workflows/pre-commit-manual.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/pre-commit-manual.yml)
 [![Pre-commit Workflow Status](https://github.com/apache/sedona/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/pre-commit.yml)
 [![Python build](https://github.com/apache/sedona/actions/workflows/python.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/python.yml)
 [![Python Extension build](https://github.com/apache/sedona/actions/workflows/python-extension.yml/badge.svg)](https://github.com/apache/sedona/actions/workflows/python-extension.yml)
@@ -226,7 +226,7 @@ We provide a Docker image for Apache Sedona with Python JupyterLab and a single-
 * [Working with Spatial R in Sedona](https://sedona.apache.org/latest/api/rdocs/)
 * [Sedona Python API Documentation](https://sedona.apache.org/latest/api/pydocs/)
 
-Please visit [Apache Sedona website](http://sedona.apache.org/) for detailed information
+Please visit [Apache Sedona website](https://sedona.apache.org/) for detailed information
 
 ## Star History
 

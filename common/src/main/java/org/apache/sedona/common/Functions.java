@@ -70,6 +70,7 @@ import org.locationtech.jts.simplify.PolygonHullSimplifier;
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier;
 import org.locationtech.jts.simplify.VWSimplifier;
 import org.locationtech.jts.triangulate.DelaunayTriangulationBuilder;
+import org.locationtech.jts.triangulate.VoronoiDiagramBuilder;
 import org.locationtech.jts.triangulate.polygon.ConstrainedDelaunayTriangulator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1153,6 +1154,23 @@ public class Functions {
     return 0;
   }
 
+  public static Geometry voronoiPolygons(Geometry geom, double tolerance, Geometry extendTo) {
+    if (geom == null) {
+      return null;
+    }
+    VoronoiDiagramBuilder builder = new VoronoiDiagramBuilder();
+    builder.setSites(geom);
+    builder.setTolerance(tolerance);
+    if (extendTo != null) {
+      builder.setClipEnvelope(extendTo.getEnvelopeInternal());
+    } else {
+      Envelope e = geom.getEnvelopeInternal();
+      e.expandBy(Math.max(e.getWidth(), e.getHeight()));
+      builder.setClipEnvelope(e);
+    }
+    return builder.getDiagram(geom.getFactory());
+  }
+
   public static Geometry concaveHull(Geometry geometry, double pctConvex, boolean allowHoles) {
     ConcaveHull concave_hull = new ConcaveHull(geometry);
     concave_hull.setMaximumEdgeLengthRatio(pctConvex);
@@ -1196,6 +1214,9 @@ public class Functions {
   }
 
   public static Geometry lineMerge(Geometry geometry) {
+    if (geometry instanceof LineString) {
+      return geometry;
+    }
     if (geometry instanceof MultiLineString) {
       MultiLineString multiLineString = (MultiLineString) geometry;
       int numLineStrings = multiLineString.getNumGeometries();
@@ -1319,6 +1340,7 @@ public class Functions {
   }
 
   public static Geometry lineInterpolatePoint(Geometry geom, double fraction) {
+    if (geom.isEmpty()) return geom.getFactory().createPoint();
     double length = geom.getLength();
     LengthIndexedLine indexedLine = new LengthIndexedLine(geom);
     Coordinate interPoint = indexedLine.extractPoint(length * fraction);
@@ -1464,7 +1486,8 @@ public class Functions {
     return ConstrainedDelaunayTriangulator.triangulate(geom);
   }
 
-  public static double lineLocatePoint(Geometry geom, Geometry point) {
+  public static Double lineLocatePoint(Geometry geom, Geometry point) {
+    if (geom.isEmpty() || point.isEmpty()) return null;
     double length = geom.getLength();
     LengthIndexedLine indexedLine = new LengthIndexedLine(geom);
     return indexedLine.indexOf(point.getCoordinate()) / length;
@@ -2475,7 +2498,7 @@ public class Functions {
     return geometricMedian(geometry, DEFAULT_TOLERANCE, DEFAULT_MAX_ITER, false);
   }
 
-  public static double frechetDistance(Geometry g1, Geometry g2) {
+  public static Double frechetDistance(Geometry g1, Geometry g2) {
     return GeomUtils.getFrechetDistance(g1, g2);
   }
 

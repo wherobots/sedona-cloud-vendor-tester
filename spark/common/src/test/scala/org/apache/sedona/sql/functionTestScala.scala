@@ -2246,7 +2246,8 @@ class functionTestScala
       ("MULTILINESTRING ((-29 -27, -30 -29.7, -45 -33), (-45 -33, -46 -32))"),
       ("MULTILINESTRING ((-29 -27, -30 -29.7, -36 -31, -45 -33), (-45.2 -33.2, -46 -32))"),
       ("POLYGON ((8 25, 28 22, 15 11, 33 3, 56 30, 47 44, 35 36, 43 19, 24 39, 8 25))"),
-      ("MULTILINESTRING ((10 160, 60 120), (120 140, 60 120), (120 140, 180 120), (100 180, 120 140))"))
+      ("MULTILINESTRING ((10 160, 60 120), (120 140, 60 120), (120 140, 180 120), (100 180, 120 140))"),
+      ("LINESTRING (0 0, 1 1)"))
       .toDF("Geometry")
 
     When("Using ST_LineMerge")
@@ -2261,7 +2262,8 @@ class functionTestScala
         "LINESTRING (-29 -27, -30 -29.7, -45 -33, -46 -32)",
         "MULTILINESTRING ((-45.2 -33.2, -46 -32), (-29 -27, -30 -29.7, -36 -31, -45 -33))",
         "GEOMETRYCOLLECTION EMPTY",
-        "MULTILINESTRING ((10 160, 60 120, 120 140), (100 180, 120 140), (120 140, 180 120))")
+        "MULTILINESTRING ((10 160, 60 120, 120 140), (100 180, 120 140), (120 140, 180 120))",
+        "LINESTRING (0 0, 1 1)")
   }
 
   it("Should pass ST_LocateAlong") {
@@ -2493,6 +2495,26 @@ class functionTestScala
     assert(result(1).get(0).asInstanceOf[Double] == 0.5)
     assert(result(2).get(0).asInstanceOf[Double] == 0.5)
     assert(result(3).get(0).asInstanceOf[Double] == 1.0)
+  }
+
+  it("Should return null for ST_LineLocatePoint with empty geometry") {
+    val df = sparkSession.sql(
+      "SELECT ST_LineLocatePoint(ST_GeomFromWKT('LINESTRING EMPTY'), ST_GeomFromWKT('POINT(1 1)')) AS loc")
+    assert(df.take(1)(0).isNullAt(0))
+  }
+
+  it("Should return null for ST_LineLocatePoint with empty point") {
+    val df = sparkSession.sql(
+      "SELECT ST_LineLocatePoint(ST_GeomFromWKT('LINESTRING(0 0, 1 1)'), ST_GeomFromWKT('POINT EMPTY')) AS loc")
+    assert(df.take(1)(0).isNullAt(0))
+  }
+
+  it("Should return POINT EMPTY for ST_LineInterpolatePoint with empty geometry") {
+    val df = sparkSession.sql(
+      "SELECT ST_LineInterpolatePoint(ST_GeomFromWKT('LINESTRING EMPTY'), 0.5) AS pt")
+    val geom = df.take(1)(0).get(0).asInstanceOf[Geometry]
+    assert(geom.isEmpty)
+    assert(geom.getGeometryType == "Point")
   }
 
   it("Should pass ST_Multi") {
@@ -3282,6 +3304,10 @@ class functionTestScala
       val expected = expectedResult
       assertEquals(expected, actual, 1e-9)
     }
+    // Empty geometries should return null
+    val dfEmpty = sparkSession.sql(
+      "SELECT ST_FrechetDistance(ST_GeomFromWKT('LINESTRING (0 0, 1 0)'), ST_GeomFromWKT('POINT EMPTY'))")
+    assert(dfEmpty.take(1)(0).isNullAt(0))
   }
 
   it("should pass ST_Affine") {
@@ -3434,7 +3460,6 @@ class functionTestScala
         "'LINESTRING (1 2, 1 5, 2 6, 1 2)'",
         "'POINT (10 34)'",
         0.34) -> (33.24154027718932, 33.24154027718932),
-      ("'LINESTRING (1 0, 1 1, 2 1, 2 0, 1 0)'", "'POINT EMPTY'", 0.23) -> (0.0, 0.0),
       (
         "'POLYGON ((1 2, 2 1, 2 0, 4 1, 1 2))'",
         "'MULTIPOINT ((1 0), (40 10), (-10 -40))'",
@@ -3454,6 +3479,13 @@ class functionTestScala
       assert(expected == actual)
       assert(expectedDefaultValue == actualDefaultValue)
     }
+    // Empty geometries should return null
+    val dfEmpty = sparkSession.sql(
+      "SELECT ST_HausdorffDistance(ST_GeomFromWKT('LINESTRING (1 0, 1 1, 2 1, 2 0, 1 0)'), ST_GeomFromWKT('POINT EMPTY'), 0.23) AS dist")
+    assert(dfEmpty.take(1)(0).isNullAt(0))
+    val dfEmptyDefault = sparkSession.sql(
+      "SELECT ST_HausdorffDistance(ST_GeomFromWKT('LINESTRING (1 0, 1 1, 2 1, 2 0, 1 0)'), ST_GeomFromWKT('POINT EMPTY')) AS dist")
+    assert(dfEmptyDefault.take(1)(0).isNullAt(0))
   }
 
   it("Passed ST_CoordDim with 3D point") {

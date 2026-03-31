@@ -30,7 +30,7 @@
     <version>1.9.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>sedona-parent</name>
-    <url>http://sedona.apache.org/</url>
+    <url>https://sedona.apache.org/</url>
     <description>Apache Sedona is a cluster computing system for processing large-scale spatial data.
     </description>
     <developers>
@@ -96,7 +96,7 @@
         <scala-collection-compat.version>2.5.0</scala-collection-compat.version>
         <geoglib.version>1.52</geoglib.version>
         <caffeine.version>2.9.2</caffeine.version>
-        <proj4sedona.version>0.0.6</proj4sedona.version>
+        <proj4sedona.version>0.0.8</proj4sedona.version>
 
         <geotools.scope>provided</geotools.scope>
         <!-- Because it's not in Maven central, make it provided by default -->

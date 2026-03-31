@@ -230,7 +230,7 @@ root
 ```
 
 !!!note
-	SedonaSQL provides lots of functions to create a Geometry column, please read [SedonaSQL constructor API](../api/sql/Constructor.md).
+	SedonaSQL provides lots of functions to create a Geometry column, please read [SedonaSQL constructor API](../api/sql/Geometry-Functions.md).
 
 ## Load GeoJSON Data
 
@@ -786,7 +786,7 @@ WHERE ST_Contains (ST_PolygonFromEnvelope(1.0,100.0,1000.0,1100.0), newcountysha
 ```
 
 !!!note
-	Read [SedonaSQL constructor API](../api/sql/Constructor.md) to learn how to create a Geometry type query window
+	Read [SedonaSQL constructor API](../api/sql/Geometry-Functions.md) to learn how to create a Geometry type query window
 
 ### KNN query
 
@@ -811,14 +811,14 @@ The details of a KNN join query is available here [KNN join query](../api/sql/Ne
 
 ### Other queries
 
-There are lots of other functions can be combined with these queries. Please read [SedonaSQL functions](../api/sql/Function.md) and [SedonaSQL aggregate functions](../api/sql/AggregateFunction.md).
+There are lots of other functions can be combined with these queries. Please read [SedonaSQL functions](../api/sql/Overview.md) and [SedonaSQL aggregate functions](../api/sql/Geometry-Functions.md#aggregate-functions).
 
 ## Visualize query results
 
 Sedona provides `SedonaPyDeck` and `SedonaKepler` wrappers, both of which expose APIs to create interactive map visualizations from SedonaDataFrames in a Jupyter environment.
 
 !!!Note
-	Both SedonaPyDeck and SedonaKepler expect the default geometry order to be lon-lat. If your dataframe has geometries in the lat-lon order, please check out [ST_FlipCoordinates](https://sedona.apache.org/latest-snapshot/api/sql/Function/#st_flipcoordinates)
+	Both SedonaPyDeck and SedonaKepler expect the default geometry order to be lon-lat. If your dataframe has geometries in the lat-lon order, please check out [ST_FlipCoordinates](../api/sql/Geometry-Editors/ST_FlipCoordinates.md)
 
 !!!Note
 	Both SedonaPyDeck and SedonaKepler are designed to work with SedonaDataFrames containing only 1 geometry column. Passing dataframes with multiple geometry columns will cause errors.

@@ -29,7 +29,7 @@
 
     <name>${project.groupId}:${project.artifactId}</name>
     <description>A cluster computing system for processing large-scale spatial data: Common API.</description>
-    <url>http://sedona.apache.org/</url>
+    <url>https://sedona.apache.org/</url>
     <packaging>jar</packaging>
 
     <properties>
@@ -128,6 +128,11 @@
         <dependency>
             <groupId>org.datasyslab</groupId>
             <artifactId>proj4sedona</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client</artifactId>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
     <build>
