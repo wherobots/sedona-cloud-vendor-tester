@@ -77,25 +77,21 @@ class SedonaSmokeTest:
     def test_basic_st_functions(self) -> None:
         """Test basic ST functions."""
         # Test basic ST functions
-        test_df = self.spark.sql(
-            """
+        test_df = self.spark.sql("""
             SELECT
                 ST_Point(1.0, 2.0) as point1,
                 ST_Point(3.0, 4.0) as point2
-        """
-        )
+        """)
 
         # Verify we can collect results
         results = test_df.selectExpr("ST_AsText(point1)", "ST_AsEWKB(point2)").collect()
         assert len(results) == 1, "Expected 1 row from basic ST functions test"
 
         # Test ST_Distance
-        distance_df = self.spark.sql(
-            """
+        distance_df = self.spark.sql("""
             SELECT
                 ST_Distance(ST_Point(0.0, 0.0), ST_Point(3.0, 4.0)) as distance
-        """
-        )
+        """)
 
         distance_row = distance_df.collect()[0]
         distance_result = distance_row["distance"]
@@ -106,8 +102,7 @@ class SedonaSmokeTest:
         print(f"  Distance calculation: {distance_result} (expected ~5.0)")
 
         # Test advanced geometric operations
-        test_df = self.spark.sql(
-            """
+        test_df = self.spark.sql("""
             SELECT
                 ST_Area(ST_GeomFromText('POLYGON((0 0, 0 5, 5 5, 5 0, 0 0))')) as square_area,
                 ST_Length(ST_GeomFromText('LINESTRING(0 0, 3 4)')) as line_length,
@@ -115,8 +110,7 @@ class SedonaSmokeTest:
                     ST_GeomFromText('POLYGON((0 0, 0 2, 2 2, 2 0, 0 0))'),
                     ST_GeomFromText('POLYGON((1 1, 1 3, 3 3, 3 1, 1 1))')
                 ) as polygons_intersect
-        """
-        )
+        """)
 
         result_row = test_df.collect()[0]
 
@@ -135,15 +129,13 @@ class SedonaSmokeTest:
 
     def test_spatial_operations(self) -> None:
         """Test spatial operations like ST_Buffer and ST_Contains."""
-        buffer_test = self.spark.sql(
-            """
+        buffer_test = self.spark.sql("""
             SELECT
                 ST_Contains(
                     ST_Buffer(ST_Point(0.0, 0.0), 10.0),
                     ST_Point(3.0, 4.0)
                 ) as point_in_buffer
-        """
-        )
+        """)
 
         result_row = buffer_test.collect()[0]
         result = result_row["point_in_buffer"]
@@ -187,13 +179,11 @@ class SedonaSmokeTest:
                 print(f"  spark.sedona.join.autoBroadcastJoinThreshold: unset")
                 self.spark.conf.unset("spark.sedona.join.autoBroadcastJoinThreshold")
 
-            df_spatial_join = self.spark.sql(
-                """
+            df_spatial_join = self.spark.sql("""
                 SELECT p.id point_id, poly.id poly_id
                 FROM test_points p, test_polygon poly
                 WHERE ST_Contains(poly.polygon, p.geometry)
-            """
-            )
+            """)
             df_spatial_join.explain(extended=True)
 
             results = df_spatial_join.collect()
