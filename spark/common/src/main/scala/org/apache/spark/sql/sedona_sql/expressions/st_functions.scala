@@ -156,6 +156,9 @@ object st_functions {
   def ST_ClosestPoint(a: Column, b: Column): Column = wrapExpression[ST_ClosestPoint](a, b)
   def ST_ClosestPoint(a: String, b: String): Column = wrapExpression[ST_ClosestPoint](a, b)
 
+  def ST_ShortestLine(a: Column, b: Column): Column = wrapExpression[ST_ShortestLine](a, b)
+  def ST_ShortestLine(a: String, b: String): Column = wrapExpression[ST_ShortestLine](a, b)
+
   def ST_Collect(geoms: Column): Column = wrapExpression[ST_Collect](geoms)
   def ST_Collect(geoms: String): Column = wrapExpression[ST_Collect](geoms)
   def ST_Collect(geoms: Any*): Column = wrapVarArgExpression[ST_Collect](geoms)
@@ -562,6 +565,15 @@ object st_functions {
     wrapExpression[ST_OrientedEnvelope](geometry)
   def ST_OrientedEnvelope(geometry: String): Column =
     wrapExpression[ST_OrientedEnvelope](geometry)
+
+  def ST_OffsetCurve(geometry: Column, distance: Column): Column =
+    wrapExpression[ST_OffsetCurve](geometry, distance)
+  def ST_OffsetCurve(geometry: String, distance: Double): Column =
+    wrapExpression[ST_OffsetCurve](geometry, distance)
+  def ST_OffsetCurve(geometry: Column, distance: Column, quadrantSegments: Column): Column =
+    wrapExpression[ST_OffsetCurve](geometry, distance, quadrantSegments)
+  def ST_OffsetCurve(geometry: String, distance: Double, quadrantSegments: Int): Column =
+    wrapExpression[ST_OffsetCurve](geometry, distance, quadrantSegments)
 
   def ST_IsPolygonCCW(geometry: Column): Column = wrapExpression[ST_IsPolygonCCW](geometry)
   def ST_IsPolygonCCW(geometry: String): Column = wrapExpression[ST_IsPolygonCCW](geometry)

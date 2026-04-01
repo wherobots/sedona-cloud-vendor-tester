@@ -54,6 +54,7 @@ import org.locationtech.jts.io.kml.KMLWriter;
 import org.locationtech.jts.linearref.LengthIndexedLine;
 import org.locationtech.jts.operation.buffer.BufferOp;
 import org.locationtech.jts.operation.buffer.BufferParameters;
+import org.locationtech.jts.operation.buffer.OffsetCurve;
 import org.locationtech.jts.operation.distance.DistanceOp;
 import org.locationtech.jts.operation.distance3d.Distance3DOp;
 import org.locationtech.jts.operation.linemerge.LineMerger;
@@ -422,6 +423,20 @@ public class Functions {
       }
     }
     return bufferParameters;
+  }
+
+  public static Geometry offsetCurve(Geometry geometry, double distance) {
+    return offsetCurve(geometry, distance, BufferParameters.DEFAULT_QUADRANT_SEGMENTS);
+  }
+
+  public static Geometry offsetCurve(Geometry geometry, double distance, int quadrantSegments) {
+    if (geometry.isEmpty()) {
+      return null;
+    }
+    BufferParameters bufferParameters = new BufferParameters();
+    bufferParameters.setQuadrantSegments(quadrantSegments);
+    OffsetCurve oc = new OffsetCurve(geometry, distance, bufferParameters);
+    return oc.getCurve();
   }
 
   public static int bestSRID(Geometry geometry) throws IllegalArgumentException {
@@ -1113,6 +1128,15 @@ public class Functions {
     } catch (Exception e) {
       throw new IllegalArgumentException("ST_ClosestPoint doesn't support empty geometry object.");
     }
+  }
+
+  public static Geometry shortestLine(Geometry left, Geometry right) {
+    if (left.isEmpty() || right.isEmpty()) {
+      return null;
+    }
+    DistanceOp distanceOp = new DistanceOp(left, right);
+    Coordinate[] closestPoints = distanceOp.nearestPoints();
+    return left.getFactory().createLineString(closestPoints);
   }
 
   public static Geometry delaunayTriangle(Geometry geometry) {

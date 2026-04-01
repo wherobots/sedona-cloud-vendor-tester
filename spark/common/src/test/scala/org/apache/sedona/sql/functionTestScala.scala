@@ -3023,6 +3023,53 @@ class functionTestScala
     }
   }
 
+  it("should pass ST_ShortestLine") {
+    // Point to point
+    var df =
+      sparkSession.sql(
+        "SELECT ST_ShortestLine(ST_GeomFromWKT('POINT (0 0)'), ST_GeomFromWKT('POINT (3 4)'))")
+    var actual = df.take(1)(0).get(0).asInstanceOf[Geometry].toText
+    assertEquals("LINESTRING (0 0, 3 4)", actual)
+
+    // Point to linestring — first coordinate should be the point
+    df = sparkSession.sql(
+      "SELECT ST_ShortestLine(ST_GeomFromWKT('POINT (160 40)'), ST_GeomFromWKT('LINESTRING (10 30, 50 50, 30 110, 70 90, 180 140, 130 190)'))")
+    val result = df.take(1)(0).get(0).asInstanceOf[Geometry]
+    assertEquals("LineString", result.getGeometryType)
+    assertEquals(160.0, result.getCoordinates()(0).x, 1e-6)
+    assertEquals(40.0, result.getCoordinates()(0).y, 1e-6)
+  }
+
+  it("should return null for ST_ShortestLine with empty geometry") {
+    val df = sparkSession.sql(
+      "SELECT ST_ShortestLine(ST_GeomFromWKT('POINT (0 0)'), ST_GeomFromWKT('GEOMETRYCOLLECTION EMPTY'))")
+    val result = df.take(1)(0).get(0)
+    assert(result == null)
+  }
+
+  it("should pass ST_OffsetCurve") {
+    // Positive distance offsets to the left
+    var df = sparkSession.sql(
+      "SELECT ST_AsText(ST_OffsetCurve(ST_GeomFromWKT('LINESTRING(0 0, 10 0)'), 5.0))")
+    var actual = df.take(1)(0).get(0).asInstanceOf[String]
+    assertEquals("LINESTRING (0 5, 10 5)", actual)
+
+    // Negative distance offsets to the right
+    df = sparkSession.sql(
+      "SELECT ST_AsText(ST_OffsetCurve(ST_GeomFromWKT('LINESTRING(0 0, 10 0)'), -5.0))")
+    actual = df.take(1)(0).get(0).asInstanceOf[String]
+    assertEquals("LINESTRING (0 -5, 10 -5)", actual)
+
+    // With quadrantSegments parameter on a line with a corner
+    val defaultDf = sparkSession.sql(
+      "SELECT ST_NPoints(ST_OffsetCurve(ST_GeomFromWKT('LINESTRING(0 0, 10 0, 10 10)'), -3.0))")
+    val defaultPts = defaultDf.take(1)(0).get(0).asInstanceOf[Int]
+    val customDf = sparkSession.sql(
+      "SELECT ST_NPoints(ST_OffsetCurve(ST_GeomFromWKT('LINESTRING(0 0, 10 0, 10 10)'), -3.0, 16))")
+    val customPts = customDf.take(1)(0).get(0).asInstanceOf[Int]
+    assertTrue(customPts > defaultPts)
+  }
+
   it("Should pass ST_AreaSpheroid") {
     val geomTestCases = Map(
       ("'POINT (-0.56 51.3168)'") -> "0.0",

@@ -472,6 +472,20 @@ def ST_ClosestPoint(a: ColumnOrName, b: ColumnOrName) -> Column:
 
 
 @validate_argument_types
+def ST_ShortestLine(a: ColumnOrName, b: ColumnOrName) -> Column:
+    """Return the shortest line between two geometries.
+
+    :param a: One geometry column.
+    :type a: ColumnOrName
+    :param b: Other geometry column.
+    :type b: ColumnOrName
+    :return: Shortest LineString connecting the two geometries as a geometry column.
+    :rtype: Column
+    """
+    return _call_st_function("ST_ShortestLine", (a, b))
+
+
+@validate_argument_types
 def ST_ConcaveHull(
     geometry: ColumnOrName,
     pctConvex: Union[ColumnOrName, float],
@@ -1772,6 +1786,32 @@ def ST_OrientedEnvelope(geometry: ColumnOrName) -> Column:
     :rtype: Column
     """
     return _call_st_function("ST_OrientedEnvelope", geometry)
+
+
+@validate_argument_types
+def ST_OffsetCurve(
+    geometry: ColumnOrName,
+    distance: ColumnOrNameOrNumber,
+    quadrant_segments: Optional[Union[ColumnOrName, int]] = None,
+) -> Column:
+    """Return a line at a given offset distance from a linear geometry.
+
+    Positive distance offsets to the left, negative to the right.
+
+    :param geometry: Linear geometry column.
+    :type geometry: ColumnOrName
+    :param distance: Offset distance.
+    :type distance: ColumnOrNameOrNumber
+    :param quadrant_segments: Number of segments to approximate a quarter circle (default 8).
+    :type quadrant_segments: Optional[Union[ColumnOrName, int]]
+    :return: Offset curve as a geometry column.
+    :rtype: Column
+    """
+    if quadrant_segments is None:
+        args = (geometry, distance)
+    else:
+        args = (geometry, distance, quadrant_segments)
+    return _call_st_function("ST_OffsetCurve", args)
 
 
 @validate_argument_types

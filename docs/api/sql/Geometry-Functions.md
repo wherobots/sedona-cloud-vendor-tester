@@ -202,6 +202,7 @@ These functions compute measurements of distance, area, length, and angles.
 | [ST_MinimumClearanceLine](Measurement-Functions/ST_MinimumClearanceLine.md) | Geometry | This function returns a two-point LineString geometry representing the minimum clearance distance of the input geometry. If the input geometry does not have a defined minimum clearance, such as for... | v1.6.1 |
 | [ST_Perimeter](Measurement-Functions/ST_Perimeter.md) | Double | This function calculates the 2D perimeter of a given geometry. It supports Polygon, MultiPolygon, and GeometryCollection geometries (as long as the GeometryCollection contains polygonal geometries)... | v1.7.0 |
 | [ST_Perimeter2D](Measurement-Functions/ST_Perimeter2D.md) | Double | This function calculates the 2D perimeter of a given geometry. It supports Polygon, MultiPolygon, and GeometryCollection geometries (as long as the GeometryCollection contains polygonal geometries)... | v1.7.1 |
+| [ST_ShortestLine](Measurement-Functions/ST_ShortestLine.md) | Geometry | Returns the shortest LineString between two geometries. The line starts on geom1 and ends on geom2. If either geometry is empty, returns null. | v1.9.0 |
 
 ## Geometry Processing
 
@@ -222,6 +223,7 @@ These functions compute geometric constructions, or alter geometry size or shape
 | [ST_MaximumInscribedCircle](Geometry-Processing/ST_MaximumInscribedCircle.md) | Struct | Finds the largest circle that is contained within a (multi)polygon, or which does not overlap any lines and points. Returns a row with fields: | v1.6.1 |
 | [ST_MinimumBoundingCircle](Geometry-Processing/ST_MinimumBoundingCircle.md) | Geometry | Returns the smallest circle polygon that contains a geometry. The optional quadrantSegments parameter determines how many segments to use per quadrant and the default number of segments has been ch... | v1.0.1 |
 | [ST_MinimumBoundingRadius](Geometry-Processing/ST_MinimumBoundingRadius.md) | Struct | Returns a struct containing the center point and radius of the smallest circle that contains a geometry. | v1.0.1 |
+| [ST_OffsetCurve](Geometry-Processing/ST_OffsetCurve.md) | Geometry | Returns a line at a given offset distance from a linear geometry. Positive distance offsets to the left, negative to the right. | v1.9.0 |
 | [ST_OrientedEnvelope](Geometry-Processing/ST_OrientedEnvelope.md) | Geometry | Returns the minimum-area rotated rectangle enclosing a geometry. The rectangle may be rotated relative to the coordinate axes. Degenerate inputs may result in a Point or LineString being returned. | v1.8.1 |
 | [ST_PointOnSurface](Geometry-Processing/ST_PointOnSurface.md) | Geometry | Returns a POINT guaranteed to lie on the surface. | v1.2.1 |
 | [ST_Polygonize](Geometry-Processing/ST_Polygonize.md) | Geometry | Generates a GeometryCollection composed of polygons that are formed from the linework of an input GeometryCollection. When the input does not contain any linework that forms a polygon, the function... | v1.6.0 |
