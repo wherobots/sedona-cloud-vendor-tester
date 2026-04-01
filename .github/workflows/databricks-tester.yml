@@ -95,9 +95,11 @@ jobs:
           SEDONA_VERSION=$(echo $SEDONA_JAR_PATH | sed 's/.*sedona-spark-shaded-\([^/]*\)\.jar/\1/')
           GEOTOOLS_JAR_PATH="databricks-artifacts/tmp/geotools-wrapper-${GEOTOOLS_VERSION}.jar"
 
-          echo "jar-path=${SEDONA_JAR_PATH}" >> $GITHUB_OUTPUT
-          echo "sedona-version=${SEDONA_VERSION}" >> $GITHUB_OUTPUT
-          echo "geotools-path=${GEOTOOLS_JAR_PATH}" >> $GITHUB_OUTPUT
+          {
+            echo "jar-path=${SEDONA_JAR_PATH}"
+            echo "sedona-version=${SEDONA_VERSION}"
+            echo "geotools-path=${GEOTOOLS_JAR_PATH}"
+          } >> $GITHUB_OUTPUT
 
           echo "Built Sedona JAR: ${SEDONA_JAR_PATH}"
           echo "Sedona Version: ${SEDONA_VERSION}"
