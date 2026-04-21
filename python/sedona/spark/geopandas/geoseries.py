@@ -67,6 +67,7 @@ IMPLEMENTATION_PRIORITY = {
         "convex_hull",
         "explode",
         "clip",
+        "clip_by_rect",
         "from_shapely",
         "count_coordinates",
         "count_geometries",
@@ -835,6 +836,23 @@ class GeoSeries(GeoFrame, pspd.Series):
             default_val=False,
         )
 
+    def clip_by_rect(self, xmin, ymin, xmax, ymax) -> "GeoSeries":
+        if not all(
+            isinstance(val, (int, float, np.integer, np.floating))
+            for val in [xmin, ymin, xmax, ymax]
+        ):
+            raise TypeError(
+                "clip_by_rect only accepts scalar numeric values for xmin/ymin/xmax/ymax"
+            )
+        rect = stc.ST_PolygonFromEnvelope(
+            float(xmin), float(ymin), float(xmax), float(ymax)
+        )
+        spark_expr = stf.ST_Intersection(self.spark.column, rect)
+        return self._query_geometry_column(
+            spark_expr,
+            returns_geom=True,
+        )
+
     def difference(self, other, align=None) -> "GeoSeries":
         other_series, extended = self._make_series_of_val(other)
         align = False if extended else align
@@ -1040,8 +1058,17 @@ class GeoSeries(GeoFrame, pspd.Series):
         )
 
     def offset_curve(self, distance, quad_segs=8, join_style="round", mitre_limit=5.0):
-        # Implementation of the abstract method.
-        raise NotImplementedError("This method is not implemented yet.")
+        # ST_OffsetCurve returns null for empty geometries, but GeoPandas returns LINESTRING EMPTY.
+        # Preserve the input's SRID on the empty fallback so CRS is not silently dropped.
+        empty_line = stf.ST_SetSRID(
+            stc.ST_GeomFromText(F.lit("LINESTRING EMPTY")),
+            stf.ST_SRID(self.spark.column),
+        )
+        spark_col = F.when(
+            stf.ST_IsEmpty(self.spark.column),
+            empty_line,
+        ).otherwise(stf.ST_OffsetCurve(self.spark.column, distance, quad_segs))
+        return self._query_geometry_column(spark_col, returns_geom=True)
 
     @property
     def interiors(self):
@@ -1509,6 +1536,18 @@ class GeoSeries(GeoFrame, pspd.Series):
             default_val=None,
         )
         return result
+
+    def shortest_line(self, other, align=None) -> "GeoSeries":
+        other_series, extended = self._make_series_of_val(other)
+        align = False if extended else align
+
+        spark_expr = stf.ST_ShortestLine(F.col("L"), F.col("R"))
+        return self._row_wise_operation(
+            spark_expr,
+            other_series,
+            align=align,
+            returns_geom=True,
+        )
 
     def snap(self, other, tolerance, align=None) -> "GeoSeries":
         if not isinstance(tolerance, (float, int)):

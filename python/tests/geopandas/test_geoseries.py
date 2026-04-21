@@ -616,6 +616,36 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
     def test_clip(self):
         pass
 
+    def test_clip_by_rect(self):
+        s = GeoSeries(
+            [
+                Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+                LineString([(0, 0), (2, 2)]),
+                Point(0.5, 0.5),
+                Point(5, 5),
+                None,
+            ],
+        )
+        result = s.clip_by_rect(0, 0, 1, 1)
+        expected = gpd.GeoSeries(
+            [
+                Polygon([(0, 0), (0, 1), (1, 1), (1, 0), (0, 0)]),
+                LineString([(0, 0), (1, 1)]),
+                Point(0.5, 0.5),
+                Polygon(),  # Sedona returns POLYGON EMPTY for non-intersecting
+                None,
+            ]
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # Check that GeoDataFrame works too
+        df_result = s.to_geoframe().clip_by_rect(0, 0, 1, 1)
+        self.check_sgpd_equals_gpd(df_result, expected)
+
+        # Test invalid input types
+        with pytest.raises(TypeError):
+            s.clip_by_rect("a", 0, 1, 1)
+
     def test_geom_type(self):
         geoseries = sgpd.GeoSeries(
             [
@@ -1514,7 +1544,41 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         self.check_sgpd_equals_gpd(df_result, expected)
 
     def test_offset_curve(self):
-        pass
+        s = GeoSeries(
+            [
+                LineString([(0, 0), (0, 1), (1, 1)]),
+                LineString([(0, 0), (10, 0)]),
+            ]
+        )
+
+        result = s.offset_curve(1.0)
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (0, 1), (1, 1)]),
+                LineString([(0, 0), (10, 0)]),
+            ]
+        ).offset_curve(1.0)
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # Negative distance (right side)
+        result = s.offset_curve(-1.0)
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (0, 1), (1, 1)]),
+                LineString([(0, 0), (10, 0)]),
+            ]
+        ).offset_curve(-1.0)
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # Check that GeoDataFrame works too
+        df_result = s.to_geoframe().offset_curve(1.0)
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (0, 1), (1, 1)]),
+                LineString([(0, 0), (10, 0)]),
+            ]
+        ).offset_curve(1.0)
+        self.check_sgpd_equals_gpd(df_result, expected)
 
     def test_interiors(self):
         pass
@@ -2567,6 +2631,54 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
 
         # Check that GeoDataFrame works too
         df_result = s.to_geoframe().snap(s2, tolerance=1, align=False)
+        self.check_sgpd_equals_gpd(df_result, expected)
+
+    def test_shortest_line(self):
+        s1 = GeoSeries(
+            [
+                Point(0, 0),
+                LineString([(0, 0), (1, 0)]),
+                Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            ]
+        )
+        s2 = GeoSeries(
+            [
+                Point(1, 1),
+                Point(0, 1),
+                Point(2, 2),
+            ]
+        )
+
+        result = s1.shortest_line(s2, align=False)
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (1, 1)]),
+                LineString([(0, 0), (0, 1)]),
+                LineString([(1, 1), (2, 2)]),
+            ]
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # Test with single geometry
+        result = s1.shortest_line(Point(1, 1))
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (1, 1)]),
+                LineString([(1, 0), (1, 1)]),
+                LineString([(1, 1), (1, 1)]),
+            ]
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
+        # Test that GeoDataFrame works too
+        df_result = s1.to_geoframe().shortest_line(s2, align=False)
+        expected = gpd.GeoSeries(
+            [
+                LineString([(0, 0), (1, 1)]),
+                LineString([(0, 0), (0, 1)]),
+                LineString([(1, 1), (2, 2)]),
+            ]
+        )
         self.check_sgpd_equals_gpd(df_result, expected)
 
     def test_intersection_all(self):

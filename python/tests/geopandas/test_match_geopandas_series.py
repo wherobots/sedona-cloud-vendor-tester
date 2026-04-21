@@ -495,6 +495,20 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
     def test_clip(self):
         pass
 
+    def test_clip_by_rect(self):
+        # Use rect (0.3, 0.3, 1.7, 1.7) so no test-geometry vertex or hole
+        # coordinate (0, 0.1, 0.2, 1, 2, …) lands on a rectangle boundary.
+        # This avoids boundary-handling differences between JTS and GEOS.
+        for geom in self.geoms:
+            # JTS throws TopologyException on invalid geometries (e.g.
+            # self-intersecting polygons) during ST_Intersection, while
+            # GEOS handles them gracefully.
+            if not gpd.GeoSeries(geom).is_valid.all():
+                continue
+            sgpd_result = GeoSeries(geom).clip_by_rect(0.3, 0.3, 1.7, 1.7)
+            gpd_result = gpd.GeoSeries(geom).clip_by_rect(0.3, 0.3, 1.7, 1.7)
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
     def test_geom_type(self):
         for geom in self.geoms:
             # Sedona converts it to LineString, so the outputs will be different
@@ -818,7 +832,21 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_offset_curve(self):
-        pass
+        for geom in self.geoms:
+            # offset_curve only works on linear geometries
+            if not all(
+                isinstance(g, (LineString, LinearRing, MultiLineString))
+                for g in geom
+                if not g.is_empty
+            ):
+                continue
+            sgpd_result = GeoSeries(geom).offset_curve(1.0)
+            gpd_result = gpd.GeoSeries(geom).offset_curve(1.0)
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+            sgpd_result = GeoSeries(geom).offset_curve(-0.5)
+            gpd_result = gpd.GeoSeries(geom).offset_curve(-0.5)
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_interiors(self):
         pass
@@ -1173,6 +1201,23 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
                 gpd.GeoSeries(geom2), tol, align=align
             )
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_shortest_line(self):
+        for geom, geom2 in self.pairs:
+            if self.contains_any_geom_collection(geom, geom2):
+                continue
+            sgpd_result = GeoSeries(geom).shortest_line(GeoSeries(geom2))
+            gpd_result = gpd.GeoSeries(geom).shortest_line(gpd.GeoSeries(geom2))
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+            if len(geom) == len(geom2):
+                sgpd_result = GeoSeries(geom).shortest_line(
+                    GeoSeries(geom2), align=False
+                )
+                gpd_result = gpd.GeoSeries(geom).shortest_line(
+                    gpd.GeoSeries(geom2), align=False
+                )
+                self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_intersection_all(self):
         pass

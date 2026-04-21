@@ -994,8 +994,50 @@ class GeoFrame(metaclass=ABCMeta):
         """
         return _delegate_to_geometry_column("extract_unique_points", self)
 
-    # def offset_curve(self, distance, quad_segs=8, join_style="round", mitre_limit=5.0):
-    #     raise NotImplementedError("This method is not implemented yet.")
+    def offset_curve(self, distance, quad_segs=8, join_style="round", mitre_limit=5.0):
+        """Returns a line at a given offset distance from each linear geometry.
+
+        Positive distance offsets to the left, negative to the right.
+
+        Parameters
+        ----------
+        distance : float
+            The offset distance. Positive offsets to the left, negative to the
+            right.
+        quad_segs : int, default 8
+            Number of segments to approximate a quarter circle.
+        join_style : str, default "round"
+            Accepted values are "round", "mitre", and "bevel".
+
+            .. note::
+               ``join_style`` and ``mitre_limit`` are accepted for API
+               compatibility but are currently ignored by Sedona's
+               ``ST_OffsetCurve``.
+
+        mitre_limit : float, default 5.0
+            Limit on the mitre ratio.
+
+        Returns
+        -------
+        GeoSeries
+
+        Examples
+        --------
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> from shapely.geometry import LineString
+        >>> s = GeoSeries(
+        ...     [
+        ...         LineString([(0, 0), (10, 0)]),
+        ...     ]
+        ... )
+        >>> s.offset_curve(1.0)
+        0    LINESTRING (0 1, 10 1)
+        dtype: geometry
+
+        """
+        return _delegate_to_geometry_column(
+            "offset_curve", self, distance, quad_segs, join_style, mitre_limit
+        )
 
     # @property
     # def interiors(self):
@@ -2822,6 +2864,51 @@ class GeoFrame(metaclass=ABCMeta):
         """
         return _delegate_to_geometry_column("intersection", self, other, align)
 
+    def shortest_line(self, other, align=None):
+        """Returns the shortest line between each geometry in the ``GeoSeries``
+        and `other`.
+
+        The resulting line starts on this geometry and ends on `other`.
+
+        The operation works on a 1-to-1 row-wise manner:
+
+        Parameters
+        ----------
+        other : GeoSeries or geometric object
+            The GeoSeries (elementwise) or geometric object to find the
+            shortest line to.
+        align : bool | None (default None)
+            If True, automatically aligns GeoSeries based on their indices. None defaults to True.
+            If False, the order of elements is preserved.
+
+        Returns
+        -------
+        GeoSeries
+
+        Examples
+        --------
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> from shapely.geometry import Point, LineString
+        >>> s1 = GeoSeries(
+        ...     [
+        ...         Point(0, 0),
+        ...         LineString([(0, 0), (1, 0)]),
+        ...     ]
+        ... )
+        >>> s2 = GeoSeries(
+        ...     [
+        ...         Point(1, 1),
+        ...         Point(0, 1),
+        ...     ]
+        ... )
+        >>> s1.shortest_line(s2, align=False)
+        0    LINESTRING (0 0, 1 1)
+        1    LINESTRING (0 0, 0 1)
+        dtype: geometry
+
+        """
+        return _delegate_to_geometry_column("shortest_line", self, other, align)
+
     def snap(self, other, tolerance, align=None):
         """Snap the vertices and segments of the geometry to vertices of the reference.
 
@@ -3072,6 +3159,74 @@ class GeoFrame(metaclass=ABCMeta):
         GeoSeries.within
         """
         return _delegate_to_geometry_column("dwithin", self, other, distance, align)
+
+    def clip_by_rect(self, xmin, ymin, xmax, ymax):
+        """Returns a ``GeoSeries`` of the portions of geometry within the
+        given rectangle.
+
+        The geometry is clipped to the rectangle defined by the given
+        coordinates.  Geometries that do not intersect the rectangle are
+        returned as empty polygons (``POLYGON EMPTY``).
+
+        .. note::
+            This implementation uses ``ST_Intersection`` with a rectangle
+            envelope, which may produce slightly different results from
+            geopandas' ``clip_by_rect`` in edge cases:
+
+            - Non-intersecting geometries are returned as ``POLYGON EMPTY``,
+              whereas geopandas returns ``GEOMETRYCOLLECTION EMPTY``.
+            - Points on the boundary of the rectangle are considered
+              intersecting and are returned unchanged, whereas geopandas
+              returns ``GEOMETRYCOLLECTION EMPTY`` for boundary-only
+              intersections.
+
+        Parameters
+        ----------
+        xmin : float
+            Minimum x value of the rectangle.
+        ymin : float
+            Minimum y value of the rectangle.
+        xmax : float
+            Maximum x value of the rectangle.
+        ymax : float
+            Maximum y value of the rectangle.
+
+        Returns
+        -------
+        GeoSeries
+
+        Examples
+        --------
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> from shapely.geometry import Polygon, LineString, Point
+        >>> s = GeoSeries(
+        ...     [
+        ...         Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+        ...         LineString([(0, 0), (2, 2)]),
+        ...         Point(0.5, 0.5),
+        ...     ],
+        ... )
+
+        >>> s.clip_by_rect(0, 0, 1, 1)
+        0    POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))
+        1                   LINESTRING (0 0, 1 1)
+        2                         POINT (0.5 0.5)
+        dtype: geometry
+
+        Geometries that do not intersect the rectangle are returned as
+        empty:
+
+        >>> GeoSeries([Point(5, 5)]).clip_by_rect(0, 0, 1, 1)
+        0    POLYGON EMPTY
+        dtype: geometry
+
+        See also
+        --------
+        GeoSeries.intersection
+        """
+        return _delegate_to_geometry_column(
+            "clip_by_rect", self, xmin, ymin, xmax, ymax
+        )
 
     def difference(self, other, align=None):
         """Returns a ``GeoSeries`` of the points in each aligned geometry that
