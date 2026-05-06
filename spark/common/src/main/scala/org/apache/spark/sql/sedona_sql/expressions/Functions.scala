@@ -19,6 +19,7 @@
 package org.apache.spark.sql.sedona_sql.expressions
 
 import org.apache.sedona.common.{Functions, FunctionsGeoTools, FunctionsProj4}
+import org.apache.sedona.common.geometryObjects.Box2D
 import org.apache.sedona.common.sphere.{Haversine, Spheroid}
 import org.apache.sedona.common.utils.{InscribedCircle, ValidDetail}
 import org.apache.sedona.core.utils.SedonaConf
@@ -69,7 +70,9 @@ private[apache] case class ST_Distance(inputExpressions: Seq[Expression])
 }
 
 private[apache] case class ST_YMax(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.yMax _) {
+    extends InferredExpression(
+      inferrableFunction1((g: Geometry) => Functions.yMax(g)),
+      inferrableFunction1((b: Box2D) => Functions.yMax(b))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -77,7 +80,9 @@ private[apache] case class ST_YMax(inputExpressions: Seq[Expression])
 }
 
 private[apache] case class ST_YMin(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.yMin _) {
+    extends InferredExpression(
+      inferrableFunction1((g: Geometry) => Functions.yMin(g)),
+      inferrableFunction1((b: Box2D) => Functions.yMin(b))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -192,7 +197,17 @@ private[apache] case class ST_Buffer(inputExpressions: Seq[Expression])
     extends InferredExpression(
       inferrableFunction2(Functions.buffer),
       inferrableFunction3(Functions.buffer),
-      inferrableFunction4(Functions.buffer)) {
+      inferrableFunction4(Functions.buffer),
+      inferrableFunction2(org.apache.sedona.common.geography.Functions.buffer),
+      // Explicit type ascription disambiguates the two 3-arg Geography buffer overloads
+      // (`(Geography, double, String)` for the JTS-style parameters string, and
+      // `(Geography, double, boolean)` which throws a clear error if `useSpheroid` is passed).
+      inferrableFunction3(
+        org.apache.sedona.common.geography.Functions
+          .buffer(_: org.apache.sedona.common.S2Geography.Geography, _: Double, _: String)),
+      inferrableFunction3(
+        org.apache.sedona.common.geography.Functions
+          .buffer(_: org.apache.sedona.common.S2Geography.Geography, _: Double, _: Boolean))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -230,6 +245,19 @@ private[apache] case class ST_Envelope(inputExpressions: Seq[Expression])
   }
 }
 
+/**
+ * Return the planar bounding box (Box2D) of a Geometry. Returns NULL for null or empty input.
+ *
+ * @param inputExpressions
+ */
+private[apache] case class ST_Box2D(inputExpressions: Seq[Expression])
+    extends InferredExpression(Functions.box2D _) {
+
+  protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
+    copy(inputExpressions = newChildren)
+  }
+}
+
 private[apache] case class ST_Expand(inputExpressions: Seq[Expression])
     extends InferredExpression(
       inferrableFunction4(Functions.expand),
@@ -242,12 +270,17 @@ private[apache] case class ST_Expand(inputExpressions: Seq[Expression])
 }
 
 /**
- * Return the length measurement of a Geometry
+ * Return the length measurement of a Geometry or Geography. Supports both Geometry (JTS, planar
+ * length in the input's coordinate units) and Geography (S2, geodesic length in meters on the
+ * WGS84 spheroid) via InferredExpression dual dispatch.
  *
  * @param inputExpressions
+ *   Geometry or Geography
  */
 private[apache] case class ST_Length(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.length _) {
+    extends InferredExpression(
+      inferrableFunction1(Functions.length),
+      inferrableFunction1(org.apache.sedona.common.geography.Functions.length)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -268,12 +301,17 @@ private[apache] case class ST_Length2D(inputExpressions: Seq[Expression])
 }
 
 /**
- * Return the area measurement of a Geometry.
+ * Return the area measurement of a Geometry or Geography. Supports both Geometry (JTS, planar
+ * area in the input's coordinate units) and Geography (S2, geodesic area in square meters on the
+ * WGS84 spheroid) via InferredExpression dual dispatch.
  *
  * @param inputExpressions
+ *   Geometry or Geography
  */
 private[apache] case class ST_Area(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.area _) {
+    extends InferredExpression(
+      inferrableFunction1(Functions.area),
+      inferrableFunction1(org.apache.sedona.common.geography.Functions.area)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -286,7 +324,9 @@ private[apache] case class ST_Area(inputExpressions: Seq[Expression])
  * @param inputExpressions
  */
 private[apache] case class ST_Centroid(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.getCentroid _) {
+    extends InferredExpression(
+      inferrableFunction1(Functions.getCentroid),
+      inferrableFunction1(org.apache.sedona.common.geography.Functions.centroid)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -571,7 +611,11 @@ private[apache] case class ST_SimplifyPolygonHull(inputExpressions: Seq[Expressi
 }
 
 private[apache] case class ST_AsText(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.asWKT _) {
+    extends InferredExpression(
+      inferrableFunction1((g: Geometry) => Functions.asWKT(g)),
+      inferrableFunction1((g: Geography) =>
+        org.apache.sedona.common.geography.Functions.asText(g)),
+      inferrableFunction1((b: Box2D) => Functions.box2dAsText(b))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -631,7 +675,9 @@ private[apache] case class ST_SetSRID(inputExpressions: Seq[Expression])
 }
 
 private[apache] case class ST_GeometryType(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.geometryType _) {
+    extends InferredExpression(
+      inferrableFunction1(Functions.geometryType),
+      inferrableFunction1(org.apache.sedona.common.geography.Functions.geometryType)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -1051,16 +1097,19 @@ private[apache] object ST_IsRing {
 }
 
 /**
- * Returns the number of Geometries. If geometry is a GEOMETRYCOLLECTION (or MULTI*) return the
- * number of geometries, for single geometries will return 1
+ * Returns the number of sub-geometries. For a GEOMETRYCOLLECTION or MULTI* input, returns the
+ * number of component geometries; for single geometries returns 1. Supports both Geometry (JTS)
+ * and Geography (S2) inputs via InferredExpression dual dispatch.
  *
- * This method implements the SQL/MM specification. SQL-MM 3: 9.1.4
+ * For Geometry inputs this method implements the SQL/MM specification (SQL-MM 3: 9.1.4).
  *
  * @param inputExpressions
- *   Geometry
+ *   Geometry or Geography
  */
 private[apache] case class ST_NumGeometries(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.numGeometries _) {
+    extends InferredExpression(
+      inferrableFunction1(Functions.numGeometries),
+      inferrableFunction1(org.apache.sedona.common.geography.Functions.numGeometries)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -1447,7 +1496,9 @@ private[apache] case class ST_IsEmpty(inputExpressions: Seq[Expression])
  * @param inputExpressions
  */
 private[apache] case class ST_XMax(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.xMax _) {
+    extends InferredExpression(
+      inferrableFunction1((g: Geometry) => Functions.xMax(g)),
+      inferrableFunction1((b: Box2D) => Functions.xMax(b))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -1460,7 +1511,9 @@ private[apache] case class ST_XMax(inputExpressions: Seq[Expression])
  * @param inputExpressions
  */
 private[apache] case class ST_XMin(inputExpressions: Seq[Expression])
-    extends InferredExpression(Functions.xMin _) {
+    extends InferredExpression(
+      inferrableFunction1((g: Geometry) => Functions.xMin(g)),
+      inferrableFunction1((b: Box2D) => Functions.xMin(b))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)

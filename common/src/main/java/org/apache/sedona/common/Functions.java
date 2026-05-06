@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.sedona.common.S2Geography.Geography;
 import org.apache.sedona.common.approximate.StraightSkeleton;
+import org.apache.sedona.common.geometryObjects.Box2D;
 import org.apache.sedona.common.geometryObjects.Circle;
 import org.apache.sedona.common.jts2geojson.GeoJSONWriter;
 import org.apache.sedona.common.sphere.Spheroid;
@@ -599,6 +600,10 @@ public class Functions {
     return geometry.getEnvelope();
   }
 
+  public static Box2D box2D(Geometry geometry) {
+    return Box2D.fromGeometry(geometry);
+  }
+
   public static Double distance(Geometry left, Geometry right) {
     if (left.isEmpty() || right.isEmpty()) {
       return null;
@@ -694,6 +699,10 @@ public class Functions {
     return min == Double.MAX_VALUE ? null : min;
   }
 
+  public static Double xMin(Box2D box) {
+    return box == null ? null : box.getXMin();
+  }
+
   public static Double xMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
@@ -701,6 +710,10 @@ public class Functions {
       max = Math.max(points[i].getX(), max);
     }
     return max == -Double.MAX_VALUE ? null : max;
+  }
+
+  public static Double xMax(Box2D box) {
+    return box == null ? null : box.getXMax();
   }
 
   public static Double yMin(Geometry geometry) {
@@ -712,6 +725,10 @@ public class Functions {
     return min == Double.MAX_VALUE ? null : min;
   }
 
+  public static Double yMin(Box2D box) {
+    return box == null ? null : box.getYMin();
+  }
+
   public static Double yMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
@@ -719,6 +736,10 @@ public class Functions {
       max = Math.max(points[i].getY(), max);
     }
     return max == -Double.MAX_VALUE ? null : max;
+  }
+
+  public static Double yMax(Box2D box) {
+    return box == null ? null : box.getYMax();
   }
 
   public static Double zMax(Geometry geometry) {
@@ -845,6 +866,33 @@ public class Functions {
 
   public static String asWKT(Geometry geometry) {
     return GeomUtils.getWKT(geometry);
+  }
+
+  /**
+   * PostGIS-format text for a Box2D: {@code BOX(x1 y1, x2 y2)}. NULL on null input.
+   *
+   * <p>Values are emitted exactly as stored on the Box2D — this method does not normalize the
+   * corners. Sedona's Box2D allows {@code xmin > xmax} (or {@code ymin > ymax}); that ordering is
+   * reserved for a future antimeridian-wraparound semantics on geography bboxes (cf. sedona-db's
+   * {@code WraparoundInterval}). The text faithfully reflects what {@code ST_XMin} / {@code
+   * ST_XMax} / etc. would return.
+   *
+   * <p>Not WKT (WKT has no {@code BOX} type), so this lives outside the {@code asWKT} family to
+   * keep that API a true geometry serializer.
+   */
+  public static String box2dAsText(Box2D box) {
+    if (box == null) {
+      return null;
+    }
+    return "BOX("
+        + box.getXMin()
+        + " "
+        + box.getYMin()
+        + ", "
+        + box.getXMax()
+        + " "
+        + box.getYMax()
+        + ")";
   }
 
   public static byte[] asEWKB(Geometry geometry) {

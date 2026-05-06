@@ -26,6 +26,7 @@ import com.google.common.geometry.S2CellId;
 import com.google.common.math.DoubleMath;
 import java.util.*;
 import java.util.stream.Collectors;
+import org.apache.sedona.common.geometryObjects.Box2D;
 import org.apache.sedona.common.sphere.Haversine;
 import org.apache.sedona.common.sphere.Spheroid;
 import org.apache.sedona.common.utils.*;
@@ -164,6 +165,15 @@ public class FunctionsTest extends TestBase {
     actual = geomFromEWKT(expectedResult);
     assertEquals(geometry, actual);
     assertEquals(expectedResult, actualResult);
+  }
+
+  @Test
+  public void box2dAsText() {
+    assertEquals("BOX(1.0 2.0, 4.0 5.0)", Functions.box2dAsText(new Box2D(1.0, 2.0, 4.0, 5.0)));
+    assertEquals(
+        "BOX(-180.0 -90.0, 180.0 90.0)",
+        Functions.box2dAsText(new Box2D(-180.0, -90.0, 180.0, 90.0)));
+    assertNull(Functions.box2dAsText(null));
   }
 
   @Test
@@ -1079,6 +1089,182 @@ public class FunctionsTest extends TestBase {
     assertTrue(polygons[0].intersects(target));
     assertTrue(polygons[20].intersects(target));
     assertTrue(polygons[100].intersects(target));
+  }
+
+  @Test
+  public void testS2CoverageContainsInput() throws ParseException {
+    String wkt =
+        "POLYGON ((-102.060778 39.9999603, -102.0535384 40.0119065, -101.98532 40.0122906, "
+            + "-95.30829 40.009008, -95.2456364 39.9564784, -95.1982467 39.9455019, "
+            + "-95.1964657 39.9113444, -95.1460439 39.9142017, -95.1316877 39.8855881, "
+            + "-95.087643 39.8717975, -95.0389987 39.8749063, -95.0146232 39.9088422, "
+            + "-94.9403146 39.906409, -94.9183761 39.8846514, -94.9329504 39.8578468, "
+            + "-94.8824331 39.8409102, -94.8675709 39.8227528, -94.878404 39.787242, "
+            + "-94.9266292 39.7786779, -94.9070076 39.7679231, -94.8631596 39.779774, "
+            + "-94.8497103 39.7604914, -94.8545514 39.7397163, -94.8985678 39.7150641, "
+            + "-94.9584897 39.7331377, -94.9637588 39.6814526, -95.0187723 39.6615712, "
+            + "-95.0456083 39.6252182, -95.0430365 39.5826542, -95.0650104 39.5677387, "
+            + "-95.0985514 39.570063, -95.1012286 39.5462821, -95.0459187 39.5064755, "
+            + "-95.0320969 39.4709074, -94.976457 39.4475392, -94.9362514 39.3964717, "
+            + "-94.8781205 39.3949417, -94.8733156 39.3663291, -94.9014695 39.3495654, "
+            + "-94.8963639 39.3135051, -94.8237994 39.2609956, -94.8194328 39.2178517, "
+            + "-94.7789019 39.214907, -94.7398645 39.1789812, -94.6785238 39.1931279, "
+            + "-94.6533801 39.1816662, -94.6517728 39.1640754, -94.605515 39.1696807, "
+            + "-94.5791896 39.1504025, -94.5983384 39.1134256, -94.6095667 36.9948123, "
+            + "-102.045765 36.9847897, -102.060778 39.9999603))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 12);
+    Geometry[] polygons =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(polygons);
+    if (!coverage.covers(input)) {
+      // The union above is unavoidable for an exact containment check; we additionally
+      // skip the (expensive, ~50k-cell) difference on the happy path and only compute it
+      // on failure to surface a useful diagnostic.
+      Geometry uncovered = input.difference(coverage);
+      double uncoveredArea = uncovered.getArea();
+      fail(
+          String.format(
+              "Coverage does not contain input. Missing %.8f deg^2 (%.6f%%)",
+              uncoveredArea, (uncoveredArea / input.getArea()) * 100.0));
+    }
+  }
+
+  @Test
+  public void testS2CoverageContainsLineString() throws ParseException {
+    // Long east-west line at mid-latitude. The great-circle arc bulges poleward of the JTS
+    // chord, so before the buffer fix the cells along the parallel were missed in the middle.
+    Geometry line = geomFromWKT("LINESTRING (-102 37, -94 37)", 0);
+    Long[] cellIds = Functions.s2CellIDs(line, 12);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage of LineString does not contain the line itself.", coverage.covers(line));
+  }
+
+  @Test
+  public void testS2CoverageContainsMultiPolygon() throws ParseException {
+    // Two disjoint polygons, both at mid-northern latitude with long east-west edges.
+    String wkt =
+        "MULTIPOLYGON ("
+            + "((-102 37, -94 37, -94 40, -102 40, -102 37)),"
+            + "((-90 50, -80 50, -80 53, -90 53, -90 50)))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 10);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage does not contain every member of the MultiPolygon.",
+        coverage.covers(input));
+  }
+
+  @Test
+  public void testS2CoverageContainsMultiLineString() throws ParseException {
+    // Three disjoint multi-segment lines: northern hemisphere, southern hemisphere, and a
+    // diagonal climb. Each is decomposed and buffered independently before S2 covering.
+    String wkt =
+        "MULTILINESTRING ("
+            + "(-102 37, -98 37, -94 37),"
+            + "(-90 -42, -85 -42, -80 -42),"
+            + "(-100 50, -95 55, -90 60))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 10);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage does not contain every member of the MultiLineString.",
+        coverage.covers(input));
+  }
+
+  @Test
+  public void testS2CoverageContainsGeometryCollection() throws ParseException {
+    String wkt =
+        "GEOMETRYCOLLECTION ("
+            + "POLYGON ((-102 37, -94 37, -94 40, -102 40, -102 37)),"
+            + "LINESTRING (10 60, 20 60, 30 60))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 10);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage does not contain every member of the GeometryCollection.",
+        coverage.covers(input));
+  }
+
+  @Test
+  public void testS2CoverageContainsPolygonWithHole() throws ParseException {
+    // Outer ring at mid-latitude with long east-west edges; an inner hole. Both rings need
+    // their great-circle bulge accounted for so the buffer applies to interior rings too.
+    String wkt =
+        "POLYGON ("
+            + "(-102 37, -94 37, -94 40, -102 40, -102 37),"
+            + "(-100 38, -96 38, -96 39, -100 39, -100 38))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 12);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue("S2 cell coverage does not contain a polygon with a hole.", coverage.covers(input));
+  }
+
+  @Test
+  public void testS2CoverageContainsAntimeridianLine() throws ParseException {
+    // Edge crossing the antimeridian. The naive chord midpoint (a.x+b.x)/2 would land at
+    // 0° longitude — the opposite side of the planet — and produce a ~180° bogus deviation.
+    // Verify that the buffer stays small (so we don't blow up the cell count) and that the
+    // returned cells still cover the line.
+    Geometry line = geomFromWKT("LINESTRING (179 5, -179 5)", 0);
+    Long[] cellIds = Functions.s2CellIDs(line, 12);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    // Sanity check: a 2°-long edge near the equator at level 12 should not produce
+    // millions of cells. If antimeridian chord-midpoint handling is wrong the buffer
+    // explodes by ~180° and the cell count would be enormous.
+    assertTrue(
+        "Antimeridian-spanning line produced too many cells (chord midpoint likely wrong): "
+            + cellIds.length,
+        cellIds.length < 5000);
+    assertTrue(
+        "S2 cell coverage of antimeridian-spanning LineString does not contain the line.",
+        coverage.covers(line));
+  }
+
+  @Test
+  public void testS2CoverageContainsWideNonAntimeridianPolygon() throws ParseException {
+    // Polygon whose envelope spans 200° in longitude but every individual edge has
+    // |Δlng| < 180°. An envelope-width-based antimeridian heuristic would skip the buffer
+    // here and reintroduce GH-2857 miscoverage along the long east-west edges; the
+    // per-edge heuristic correctly leaves the buffer on.  Intermediate vertices on the
+    // east-west edges keep each segment under 180° of longitudinal span.
+    String wkt = "POLYGON ((-100 30, -10 30, 100 30, 100 50, 10 50, -100 50, -100 30))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 6);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage does not contain a wide non-antimeridian polygon (>180° lng span).",
+        coverage.covers(input));
+  }
+
+  @Test
+  public void testS2CoverageContainsHighLatitudePolygon() throws ParseException {
+    // Polygon near 80°N with a long east-west edge: the great-circle/chord deviation grows
+    // sharply with latitude, so the arc-chord bound has to stay correct without any rigid
+    // cap on the buffer or latitude clamp on the deviation calculation.
+    String wkt = "POLYGON ((-30 80, 30 80, 30 82, -30 82, -30 80))";
+    Geometry input = geomFromWKT(wkt, 0);
+    Long[] cellIds = Functions.s2CellIDs(input, 8);
+    Geometry[] cells =
+        Functions.s2ToGeom(Arrays.stream(cellIds).mapToLong(Long::longValue).toArray());
+    Geometry coverage = Functions.union(cells);
+    assertTrue(
+        "S2 cell coverage does not contain a high-latitude polygon.", coverage.covers(input));
   }
 
   @Test
@@ -3215,10 +3401,10 @@ public class FunctionsTest extends TestBase {
             "POLYGON ((-179.908607846266 24.025403116254306, -177.99876698499668 23.825660822056278, -176.1851748144233 23.267372220454533, -174.54862792786022 22.380090414241554, -173.15522797402008 21.20765453023379, -172.05367901642606 19.803908497939666, -171.27542809803106 18.22850022788734, -170.83670228698406 16.543486102335997, -170.7412636921777 14.811036901560918, -170.9829095910743 13.092142713348924, -171.5471495735382 11.445952123266512, -172.41190582467604 9.929276420592164, -173.54741832839647 8.595821727211286, -174.91577148479777 7.494852554680671, -176.47058207976102 6.669211334615649, -178.157376393358 6.152879352694568, -179.9150124655878 5.968498588196282, 179.9878642700213 5.967715967762297, 178.22454996382154 6.1243064565567416, 176.52190735292885 6.617190677478861, 174.94354089208682 7.427303247307942, 173.5475157235323 8.522934832546376, 172.38432738193248 9.861905503007021, 171.4959038990676 11.393986435009106, 170.9153886431351 13.063103234007537, 170.66721922346738 14.80905645479948, 170.76695775874103 16.568760623485606, 171.22043647400534 18.277247812024235, 172.02203612722943 19.86884329704546, 173.1522881340142 21.278955415388584, 174.5754355707626 22.446796923405344, 176.2379815998183 23.319060447498003, 178.06938085914476 23.854152382752126, 179.98566424517946 24.026184454399257, -179.908607846266 24.025403116254306))");
     Geometry expected8 =
         geomFromEWKT(
-            "POLYGON ((179 -15.000873160293315, 178.999824747382 -15.000856382797105, 178.99965622962375 -15.000806695050459, 178.9995009227683 -15.000726006503347, 178.999364795171 -15.000617417938033, 178.99925307813902 -15.000485102312915, 178.9991700648953 -15.000334144403906, 178.99911894559222 -15.00017034540551, 178.9991016847159 -14.999999999999092, 178.9991016847159 14.99999999999908, 178.99911894559222 15.00017034540551, 178.9991700648953 15.000334144403906, 178.99925307813902 15.000485102312902, 178.999364795171 15.000617417938045, 178.9995009227683 15.000726006503333, 178.99965622962375 15.000806695050459, 178.999824747382 15.000856382797105, 179 15.000873160293315, -179.00000000000003 15.000873160293315, -178.99982474738198 15.000856382797105, -178.99965622962375 15.000806695050459, -178.9995009227683 15.000726006503333, -178.99936479517098 15.000617417938045, -178.99925307813902 15.000485102312902, -178.99917006489528 15.000334144403906, -178.9991189455922 15.00017034540551, -178.99910168471592 14.99999999999908, -178.99910168471592 -14.999999999999092, -178.9991189455922 -15.00017034540551, -178.99917006489528 -15.000334144403906, -178.99925307813902 -15.000485102312915, -178.99936479517098 -15.000617417938033, -178.9995009227683 -15.000726006503347, -178.99965622962375 -15.000806695050459, -178.99982474738198 -15.000856382797105, -179.00000000000003 -15.000873160293315, 179 -15.000873160293315))");
+            "POLYGON ((178.9999957907089 -15.000903596473622, 178.99981605472888 -15.000885740363822, 178.9996432665321 -15.000834429161598, 178.99948395250945 -15.000751600936063, 178.99934413010374 -15.000640384187193, 178.999229080519 -15.000504979676391, 178.99914314924223 -15.00035050175554, 178.99908958191227 -15.000182785188626, 178.99907040173593 -15.000008164763253, 178.99907040173593 15.000008164763253, 178.99908958191227 15.000182785188626, 178.99914314924223 15.00035050175554, 178.999229080519 15.000504979676391, 178.99934413010374 15.000640384187193, 178.99948395250945 15.000751600936063, 178.9996432665321 15.000834429161598, 178.99981605472888 15.000885740363822, 178.9999957907089 15.000903596473622, -178.99999579488448 15.000902045906788, -178.99981328322758 15.000883609256881, -178.9996380712079 15.000830628745314, -178.9994770086097 15.000745175629842, -178.99933639202962 15.000630590654932, -178.99922171871367 15.000491353441594, -178.99913747164914 15.000332907354343, -178.9990869443138 15.000161446693122, -178.9990721119315 14.999983674530355, -178.9990721119315 -14.999983674530355, -178.9990869443138 -15.000161446693122, -178.99913747164914 -15.000332907354343, -178.99922171871367 -15.000491353441594, -178.99933639202962 -15.000630590654932, -178.9994770086097 -15.000745175629842, -178.9996380712079 -15.000830628745314, -178.99981328322758 -15.000883609256881, -178.99999579488448 -15.000902045906788, 178.9999957907089 -15.000903596473622))");
     Geometry expected9 =
         geomFromEWKT(
-            "POLYGON ((178 -18.747248844374, 176.24747381949112 -18.582729101204464, 174.5622962372712 -18.0945531116537, 173.0092276827665 -17.29887379200776, 171.64795170955566 -16.222572896097414, 170.53078138987692 -14.903037762363958, 169.70064895259912 -13.387566659631126, 169.18945592174327 -11.73221950803158, 169.01684715880478 -9.999999999999265, 169.01684715880478 9.999999999999238, 169.18945592174327 11.73221950803157, 169.70064895259912 13.387566659631101, 170.53078138987692 14.903037762363944, 171.64795170955566 16.2225728960974, 173.0092276827665 17.298873792007747, 174.5622962372712 18.094553111653685, 176.24747381949112 18.582729101204453, 178 18.747248844373974, -178 18.747248844373974, -176.24747381949115 18.582729101204453, -174.56229623727123 18.094553111653685, -173.00922768276646 17.298873792007747, -171.64795170955566 16.2225728960974, -170.5307813898769 14.903037762363944, -169.70064895259912 13.387566659631101, -169.18945592174325 11.73221950803157, -169.0168471588048 9.999999999999238, -169.0168471588048 -9.999999999999265, -169.18945592174325 -11.73221950803158, -169.70064895259912 -13.387566659631126, -170.5307813898769 -14.903037762363972, -171.64795170955566 -16.222572896097414, -173.00922768276646 -17.29887379200776, -174.56229623727123 -18.0945531116537, -176.24747381949115 -18.582729101204464, -178 -18.747248844374, 178 -18.747248844374))");
+            "POLYGON ((177.9549995416554 -19.040094935317835, 176.11434781653608 -18.85284309323023, 174.35693335915332 -18.312833546632955, 172.75892069701706 -17.445729285603573, 171.38477758716215 -16.29151182562638, 170.28436137749944 -14.900872725390832, 169.49233786416985 -13.331457888391856, 169.02929359537578 -11.64464082255408, 168.9036172802648 -9.903154239380708, 168.9036172802648 9.903154239380708, 169.02929359537578 11.644640822554088, 169.49233786416985 13.331457888391858, 170.28436137749944 14.900872725390835, 171.38477758716215 16.291511825626383, 172.75892069701706 17.445729285603576, 174.35693335915332 18.31283354663296, 176.11434781653608 18.85284309323023, 177.9549995416554 19.040094935317835, -177.87900985512576 19.007598545952018, -176.03054595864288 18.788450939408023, -174.2789941686595 18.21455302093928, -172.69957660725598 17.31634002547884, -171.35403397135434 16.137635031716854, -170.28849568727753 14.731558908748932, -169.53373124250396 13.156632392026058, -169.1069396813116 11.47370649042299, -169.01406048680477 9.743956042208017, -169.01406048680477 -9.743956042208017, -169.1069396813116 -11.47370649042299, -169.53373124250396 -13.156632392026058, -170.28849568727753 -14.731558908748932, -171.35403397135434 -16.137635031716854, -172.69957660725598 -17.31634002547884, -174.2789941686595 -18.21455302093928, -176.03054595864288 -18.788450939408023, -177.87900985512576 -19.007598545952018, 177.9549995416554 -19.040094935317835))");
 
     Geometry postgis_result1 =
         geomFromEWKT(
@@ -3389,6 +3575,18 @@ public class FunctionsTest extends TestBase {
 
     assertEquals(
         "Expected World Mercator projection for wide range geometry", expectedEPSG, actualEPSG);
+  }
+
+  @Test
+  public void testBestSRIDNearSouthPole() throws ParseException {
+    int actualEPSG =
+        Functions.bestSRID(
+            geomFromWKT("LINESTRING (-179.9999994 -82.42408, -157.330902 -85.0511284)", 4326));
+
+    assertEquals(
+        "Expected South Pole Lambert Azimuthal Equal Area projection near the south pole",
+        Spheroid.EPSG_SOUTH_LAMBERT,
+        actualEPSG);
   }
 
   @Test

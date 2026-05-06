@@ -42,7 +42,10 @@ case class JoinQueryDetection(
     spatialPredicate: SpatialPredicate,
     isGeography: Boolean,
     extraCondition: Option[Expression] = None,
-    distance: Option[Expression] = None)
+    distance: Option[Expression] = None,
+    // True when the join key columns are GeographyUDT (independent of `isGeography`,
+    // which means "use spheroid distance"). Currently only ST_Contains is supported.
+    geographyShape: Boolean = false)
 
 /**
  * Plans `RangeJoinExec` for inner joins on spatial relationships ST_Contains(a, b) and
@@ -54,14 +57,40 @@ case class JoinQueryDetection(
  */
 class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
 
-  // Geography spatial joins are not supported in this PR — TraitJoinQueryBase.toSpatialRDD
-  // deserializes join keys with GeometrySerializer, which would fail on Geography bytes.
-  // ST_Contains is the only spatial predicate currently wired for Geography (via InferredExpression
-  // dual dispatch); when either side is GeographyUDT we skip join planning and let Spark evaluate
-  // the predicate row-by-row. Other ST_Predicates reject Geography inputs at analysis time, so no
-  // guard is needed there.
+  // Geography spatial predicates wired via InferredExpression dual dispatch:
+  //   * ST_Contains — broadcast joins route GeographyUDT inputs through a dedicated index/refine
+  //     path (see SpatialIndexExec.geographyShape / BroadcastIndexJoinExec.geographyShape). The
+  //     partition/range path still falls back to row-by-row evaluation.
+  //   * ST_Intersects / ST_Within / ST_Equals — no broadcast index path yet (the Geography
+  //     refiner is ST_Contains-specific), so we gate Geography inputs at the matcher (via
+  //     `inferredJoinDetection`) and let Spark evaluate the predicate row-by-row.
+  // Other ST_Predicates reject Geography inputs at analysis time, so no guard is needed there.
   private def isGeographyInput(shape: Expression): Boolean =
     shape.dataType.isInstanceOf[GeographyUDT]
+
+  /**
+   * Build a JoinQueryDetection for an InferredExpression predicate (ST_Contains, ST_Within, ...)
+   * unless either operand is GeographyUDT, in which case the join is skipped and the predicate
+   * falls back to row-by-row evaluation.
+   */
+  private def inferredJoinDetection(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      leftShape: Expression,
+      rightShape: Expression,
+      spatialPredicate: SpatialPredicate,
+      extraCondition: Option[Expression]): Option[JoinQueryDetection] =
+    if (isGeographyInput(leftShape) || isGeographyInput(rightShape)) None
+    else
+      Some(
+        JoinQueryDetection(
+          left,
+          right,
+          leftShape,
+          rightShape,
+          spatialPredicate,
+          isGeography = false,
+          extraCondition))
 
   private def getJoinDetection(
       left: LogicalPlan,
@@ -69,26 +98,6 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
       predicate: ST_Predicate,
       extraCondition: Option[Expression] = None): Option[JoinQueryDetection] = {
     predicate match {
-      case ST_Intersects(Seq(leftShape, rightShape)) =>
-        Some(
-          JoinQueryDetection(
-            left,
-            right,
-            leftShape,
-            rightShape,
-            SpatialPredicate.INTERSECTS,
-            false,
-            extraCondition))
-      case ST_Within(Seq(leftShape, rightShape)) =>
-        Some(
-          JoinQueryDetection(
-            left,
-            right,
-            leftShape,
-            rightShape,
-            SpatialPredicate.WITHIN,
-            false,
-            extraCondition))
       case ST_Covers(Seq(leftShape, rightShape)) =>
         Some(
           JoinQueryDetection(
@@ -127,16 +136,6 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
             leftShape,
             rightShape,
             SpatialPredicate.TOUCHES,
-            false,
-            extraCondition))
-      case ST_Equals(Seq(leftShape, rightShape)) =>
-        Some(
-          JoinQueryDetection(
-            left,
-            right,
-            leftShape,
-            rightShape,
-            SpatialPredicate.EQUALS,
             false,
             extraCondition))
       case ST_Crosses(Seq(leftShape, rightShape)) =>
@@ -208,11 +207,17 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
       val queryDetection: Option[JoinQueryDetection] = condition.flatMap {
         case joinConditionMatcher(predicate, extraCondition) =>
           predicate match {
-            // ST_Contains is an InferredExpression (not ST_Predicate) so it can't sit inside
-            // getJoinDetection; it's also the only predicate currently accepting Geography
-            // inputs and therefore the only one needing the Geography guard.
-            case ST_Contains(Seq(leftShape, rightShape))
-                if !isGeographyInput(leftShape) && !isGeographyInput(rightShape) =>
+            // ST_Contains / ST_Intersects / ST_Within / ST_Equals are InferredExpression (not
+            // ST_Predicate) so they can't sit inside getJoinDetection; they're also the only
+            // predicates currently accepting Geography inputs.
+            //
+            // ST_Contains: when either operand is GeographyUDT we still detect the join here and
+            // set `geographyShape = true`; planBroadcastJoin will route the work to the
+            // Geography-aware index/refine path. Non-broadcast plans bail out in `apply` below
+            // and fall back to row-by-row evaluation.
+            case ST_Contains(Seq(leftShape, rightShape)) =>
+              val geographyShape =
+                isGeographyInput(leftShape) || isGeographyInput(rightShape)
               Some(
                 JoinQueryDetection(
                   left,
@@ -220,13 +225,14 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   leftShape,
                   rightShape,
                   SpatialPredicate.CONTAINS,
-                  false,
-                  extraCondition))
-            case pred: ST_Predicate =>
-              getJoinDetection(left, right, pred, extraCondition)
-            case pred: RS_Predicate =>
-              getRasterJoinDetection(left, right, pred, extraCondition)
-            case ST_DWithin(Seq(leftShape, rightShape, distance)) =>
+                  isGeography = false,
+                  extraCondition,
+                  geographyShape = geographyShape))
+            // ST_Intersects / ST_Within / ST_Equals on Geography route through the
+            // Geography-aware refiner (`GeographyRelationRefiner`); geometry inputs continue
+            // through `inferredJoinDetection`.
+            case ST_Intersects(Seq(leftShape, rightShape))
+                if isGeographyInput(leftShape) || isGeographyInput(rightShape) =>
               Some(
                 JoinQueryDetection(
                   left,
@@ -235,8 +241,77 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   rightShape,
                   SpatialPredicate.INTERSECTS,
                   isGeography = false,
+                  extraCondition,
+                  geographyShape = true))
+            case ST_Intersects(Seq(leftShape, rightShape)) =>
+              inferredJoinDetection(
+                left,
+                right,
+                leftShape,
+                rightShape,
+                SpatialPredicate.INTERSECTS,
+                extraCondition)
+            case ST_Within(Seq(leftShape, rightShape))
+                if isGeographyInput(leftShape) || isGeographyInput(rightShape) =>
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.WITHIN,
+                  isGeography = false,
+                  extraCondition,
+                  geographyShape = true))
+            case ST_Within(Seq(leftShape, rightShape)) =>
+              inferredJoinDetection(
+                left,
+                right,
+                leftShape,
+                rightShape,
+                SpatialPredicate.WITHIN,
+                extraCondition)
+            case ST_Equals(Seq(leftShape, rightShape))
+                if isGeographyInput(leftShape) || isGeographyInput(rightShape) =>
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.EQUALS,
+                  isGeography = false,
+                  extraCondition,
+                  geographyShape = true))
+            case ST_Equals(Seq(leftShape, rightShape)) =>
+              inferredJoinDetection(
+                left,
+                right,
+                leftShape,
+                rightShape,
+                SpatialPredicate.EQUALS,
+                extraCondition)
+            case pred: ST_Predicate =>
+              getJoinDetection(left, right, pred, extraCondition)
+            case pred: RS_Predicate =>
+              getRasterJoinDetection(left, right, pred, extraCondition)
+            case ST_DWithin(Seq(leftShape, rightShape, distance)) =>
+              val geographyShape =
+                isGeographyInput(leftShape) || isGeographyInput(rightShape)
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.INTERSECTS,
+                  isGeography = geographyShape,
                   condition,
-                  Some(distance)))
+                  Some(distance),
+                  geographyShape = geographyShape))
+            // Note: the 4-arg ST_DWithin is geometry-only; on Geography input the Spark
+            // analyzer rejects the call before reaching this matcher, so no Geography
+            // guard is needed here.
             case ST_DWithin(Seq(leftShape, rightShape, distance, useSpheroid)) =>
               val useSpheroidUnwrapped = useSpheroid.eval().asInstanceOf[Boolean]
               Some(
@@ -432,33 +507,29 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
 
       if ((broadcastLeft || broadcastRight) && sedonaConf.getUseIndex) {
         queryDetection match {
-          case Some(
-                JoinQueryDetection(
-                  left,
-                  right,
-                  leftShape,
-                  rightShape,
-                  spatialPredicate,
-                  isGeography,
-                  extraCondition,
-                  distance)) =>
+          case Some(detection) =>
             planBroadcastJoin(
-              left,
-              right,
-              Seq(leftShape, rightShape),
+              detection.left,
+              detection.right,
+              Seq(detection.leftShape, detection.rightShape),
               joinType,
-              spatialPredicate,
+              detection.spatialPredicate,
               sedonaConf.getIndexType,
               broadcastLeft,
               broadcastRight,
-              isGeography,
-              extraCondition,
-              distance)
+              detection.isGeography,
+              detection.extraCondition,
+              detection.distance,
+              detection.geographyShape)
           case _ =>
             Nil
         }
       } else {
         queryDetection match {
+          // Geography predicates (ST_Contains/Within/Intersects/Equals/DWithin) have no
+          // partition/range path — fall back to row-by-row.
+          case Some(detection) if detection.geographyShape =>
+            Nil
           case Some(
                 JoinQueryDetection(
                   left,
@@ -468,7 +539,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   spatialPredicate,
                   isGeography,
                   extraCondition,
-                  None)) =>
+                  None,
+                  _)) =>
             planSpatialJoin(
               left,
               right,
@@ -485,7 +557,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   spatialPredicate,
                   isGeography,
                   extraCondition,
-                  Some(distance))) =>
+                  Some(distance),
+                  _)) =>
             Option(spatialPredicate) match {
               case Some(SpatialPredicate.KNN) =>
                 planKNNJoin(
@@ -714,7 +787,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
       broadcastRight: Boolean,
       isGeography: Boolean,
       extraCondition: Option[Expression],
-      distance: Option[Expression]): Seq[SparkPlan] = {
+      distance: Option[Expression],
+      geographyShape: Boolean = false): Seq[SparkPlan] = {
 
     val broadcastSide = joinType match {
       case Inner if broadcastLeft => Some(LeftSide)
@@ -812,9 +886,33 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
       .map { distanceExpr =>
         matchDistanceExpressionToJoinSide(distanceExpr, left, right) match {
           case Some(side) =>
-            if (broadcastSide.get == side) (Some(distanceExpr), None)
-            else if (distanceExpr.references.isEmpty) (Some(distanceExpr), None)
-            else (None, Some(distanceExpr))
+            if (geographyShape) {
+              // Geography distance joins read the per-row radius from the stream-side
+              // GeographyJoinShape inside GeographyDistanceRefiner, so the radius MUST
+              // be available on the streamed side. The stream-side expression is later
+              // re-bound against `streamed.output` in BroadcastIndexJoinExec, so we
+              // can only forward it to the stream side when it is either a literal
+              // (no references) or already bound to the streamed side.
+              if (distanceExpr.references.isEmpty) {
+                // Literal: keep build-side expansion AND populate stream-side radius.
+                (Some(distanceExpr), Some(distanceExpr))
+              } else if (broadcastSide.get == side) {
+                // Non-literal expression bound to the broadcast/index side cannot be
+                // re-bound against streamed.output. Reject up front rather than
+                // planning a broadcast geography join that will fail at execution.
+                throw new UnsupportedOperationException(
+                  "Geography distance broadcast joins do not support non-literal " +
+                    "distance expressions bound to the broadcast/index side; bind " +
+                    "the distance expression to the streamed side or use a literal.")
+              } else {
+                // Bound to the streamed side: stream-only (no build-side expansion).
+                (None, Some(distanceExpr))
+              }
+            } else {
+              if (broadcastSide.get == side) (Some(distanceExpr), None)
+              else if (distanceExpr.references.isEmpty) (Some(distanceExpr), None)
+              else (None, Some(distanceExpr))
+            }
           case _ =>
             throw new IllegalArgumentException(
               "Distance expression must be bound to one side of the join")
@@ -834,7 +932,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                 indexType,
                 isRasterPredicate,
                 isGeography,
-                distanceOnIndexSide),
+                distanceOnIndexSide,
+                geographyShape),
               planLater(right),
               b,
               LeftSide)
@@ -846,7 +945,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                 indexType,
                 isRasterPredicate,
                 isGeography,
-                distanceOnIndexSide),
+                distanceOnIndexSide,
+                geographyShape),
               planLater(right),
               a,
               RightSide)
@@ -859,7 +959,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                 indexType,
                 isRasterPredicate,
                 isGeography,
-                distanceOnIndexSide),
+                distanceOnIndexSide,
+                geographyShape),
               a,
               LeftSide)
           case (RightSide, true) => // Broadcast the right side, objects on the left
@@ -871,7 +972,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                 indexType,
                 isRasterPredicate,
                 isGeography,
-                distanceOnIndexSide),
+                distanceOnIndexSide,
+                geographyShape),
               b,
               RightSide)
         }
@@ -884,7 +986,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
           joinType,
           spatialPredicate,
           extraCondition,
-          distanceOnStreamSide) :: Nil
+          distanceOnStreamSide,
+          geographyShape) :: Nil
       case None =>
         logInfo(
           s"Spatial join for $relationship with arguments not aligned " +

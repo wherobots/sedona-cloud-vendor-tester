@@ -24,6 +24,7 @@ import java.nio.ByteOrder;
 import javax.xml.parsers.ParserConfigurationException;
 import org.apache.sedona.common.enums.FileDataSplitter;
 import org.apache.sedona.common.enums.GeometryType;
+import org.apache.sedona.common.geometryObjects.Box2D;
 import org.apache.sedona.common.utils.FormatUtils;
 import org.apache.sedona.common.utils.GeoHashDecoder;
 import org.locationtech.jts.geom.*;
@@ -286,6 +287,59 @@ public class Constructors {
 
   public static Geometry makeEnvelope(double minX, double minY, double maxX, double maxY) {
     return makeEnvelope(minX, minY, maxX, maxY, 0);
+  }
+
+  /**
+   * Convert a {@link Box2D} to a Geometry. Mirrors PostGIS {@code box2d::geometry}: dispatches on
+   * dimensionality so the result matches what {@code ST_Envelope(geom)} would have produced for the
+   * source geometry. Degenerate boxes return:
+   *
+   * <ul>
+   *   <li>{@code POINT} when {@code xmin == xmax && ymin == ymax}
+   *   <li>{@code LINESTRING} when exactly one of the X / Y intervals collapses
+   *   <li>{@code POLYGON} otherwise
+   * </ul>
+   *
+   * Returns NULL on null input.
+   */
+  public static Geometry geomFromBox2D(Box2D box) {
+    if (box == null) {
+      return null;
+    }
+    double xmin = box.getXMin();
+    double ymin = box.getYMin();
+    double xmax = box.getXMax();
+    double ymax = box.getYMax();
+    boolean xCollapsed = xmin == xmax;
+    boolean yCollapsed = ymin == ymax;
+    if (xCollapsed && yCollapsed) {
+      return GEOMETRY_FACTORY.createPoint(new Coordinate(xmin, ymin));
+    }
+    if (xCollapsed || yCollapsed) {
+      return GEOMETRY_FACTORY.createLineString(
+          new Coordinate[] {new Coordinate(xmin, ymin), new Coordinate(xmax, ymax)});
+    }
+    return polygonFromEnvelope(xmin, ymin, xmax, ymax);
+  }
+
+  /**
+   * Build a {@link Box2D} from two corner points. The corners are taken verbatim — no swapping or
+   * validation of ordering — so {@code xmin > xmax} or {@code ymin > ymax} are preserved as
+   * supplied. NULL or empty point inputs return NULL.
+   */
+  public static Box2D makeBox2D(Geometry lowerLeft, Geometry upperRight) {
+    if (lowerLeft == null || upperRight == null) {
+      return null;
+    }
+    if (!(lowerLeft instanceof Point) || !(upperRight instanceof Point)) {
+      throw new IllegalArgumentException("ST_MakeBox2D requires two POINT geometries");
+    }
+    if (lowerLeft.isEmpty() || upperRight.isEmpty()) {
+      return null;
+    }
+    Point ll = (Point) lowerLeft;
+    Point ur = (Point) upperRight;
+    return new Box2D(ll.getX(), ll.getY(), ur.getX(), ur.getY());
   }
 
   public static Geometry geomFromGeoHash(String geoHash, Integer precision) {
