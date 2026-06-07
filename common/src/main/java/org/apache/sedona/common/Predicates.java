@@ -18,13 +18,109 @@
  */
 package org.apache.sedona.common;
 
+import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.common.geometryObjects.Box3D;
 import org.apache.sedona.common.sphere.Spheroid;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.operation.distance3d.Distance3DOp;
 import org.locationtech.jts.operation.relate.RelateOp;
 
 public class Predicates {
   public static boolean contains(Geometry leftGeometry, Geometry rightGeometry) {
     return leftGeometry.contains(rightGeometry);
+  }
+
+  /**
+   * Closed-interval bbox intersection: true if {@code a} and {@code b} overlap on <em>both</em> the
+   * X and Y axes (matches PostGIS {@code &&} on box2d). Edge- and corner-touching boxes count as
+   * intersecting.
+   *
+   * <p>Both arguments must have ordered bounds ({@code xmin <= xmax} and {@code ymin <= ymax}).
+   * Sedona's Box2D type allows inverted bounds ({@code xmin > xmax}) — that ordering is reserved
+   * for a future antimeridian-wraparound semantics on geography bboxes (cf. sedona-db's {@code
+   * WraparoundInterval}). Until those semantics ship, planar predicates throw on inverted input
+   * rather than silently returning misleading results. SQL callers see NULL in/out null
+   * propagation; this Java entry point throws on null.
+   */
+  public static boolean boxIntersects(Box2D a, Box2D b) {
+    requireOrderedPlanarBox(a, "a");
+    requireOrderedPlanarBox(b, "b");
+    return !(a.getXMax() < b.getXMin()
+        || a.getXMin() > b.getXMax()
+        || a.getYMax() < b.getYMin()
+        || a.getYMin() > b.getYMax());
+  }
+
+  /**
+   * True if {@code a} fully contains {@code b} on <em>both</em> the X and Y axes (closed intervals;
+   * matches PostGIS {@code ~} on box2d). Equal boxes contain each other.
+   *
+   * <p>Same ordered-bound contract as {@link #boxIntersects(Box2D, Box2D)} — inverted bounds throw
+   * because planar containment with inverted intervals has no defined meaning until antimeridian
+   * wraparound semantics ship.
+   */
+  public static boolean boxContains(Box2D a, Box2D b) {
+    requireOrderedPlanarBox(a, "a");
+    requireOrderedPlanarBox(b, "b");
+    return a.getXMin() <= b.getXMin()
+        && a.getYMin() <= b.getYMin()
+        && a.getXMax() >= b.getXMax()
+        && a.getYMax() >= b.getYMax();
+  }
+
+  private static void requireOrderedPlanarBox(Box2D box, String argName) {
+    if (box.getXMin() > box.getXMax() || box.getYMin() > box.getYMax()) {
+      throw new IllegalArgumentException(
+          "Box2D argument '"
+              + argName
+              + "' has inverted bounds (xmin > xmax or ymin > ymax). Planar Box2D predicates "
+              + "require ordered intervals; inverted bounds are reserved for future antimeridian "
+              + "wraparound semantics.");
+    }
+  }
+
+  private static void requireOrderedBox3D(Box3D box, String argName) {
+    if (box.getXMin() > box.getXMax()
+        || box.getYMin() > box.getYMax()
+        || box.getZMin() > box.getZMax()) {
+      throw new IllegalArgumentException(
+          "Box3D argument '"
+              + argName
+              + "' has inverted bounds (xmin > xmax, ymin > ymax, or zmin > zmax). Box3D "
+              + "predicates require ordered intervals on all three axes.");
+    }
+  }
+
+  /**
+   * Closed-interval bbox intersection over two Box3D arguments. Returns true if the boxes overlap
+   * on <em>all three</em> axes. Mirrors PostGIS {@code &&&} on box3d. Edge-, face-, and
+   * corner-touching boxes count as intersecting. Throws on inverted bounds.
+   */
+  public static boolean box3dIntersects(Box3D a, Box3D b) {
+    requireOrderedBox3D(a, "a");
+    requireOrderedBox3D(b, "b");
+    return !(a.getXMax() < b.getXMin()
+        || a.getXMin() > b.getXMax()
+        || a.getYMax() < b.getYMin()
+        || a.getYMin() > b.getYMax()
+        || a.getZMax() < b.getZMin()
+        || a.getZMin() > b.getZMax());
+  }
+
+  /**
+   * Closed-interval bbox containment over two Box3D arguments. Returns true if {@code a} fully
+   * contains {@code b} on <em>all three</em> axes. Equal boxes contain each other. Throws on
+   * inverted bounds.
+   */
+  public static boolean box3dContains(Box3D a, Box3D b) {
+    requireOrderedBox3D(a, "a");
+    requireOrderedBox3D(b, "b");
+    return a.getXMin() <= b.getXMin()
+        && a.getYMin() <= b.getYMin()
+        && a.getZMin() <= b.getZMin()
+        && a.getXMax() >= b.getXMax()
+        && a.getYMax() >= b.getYMax()
+        && a.getZMax() >= b.getZMax();
   }
 
   public static boolean intersects(Geometry leftGeometry, Geometry rightGeometry) {
@@ -82,6 +178,61 @@ public class Predicates {
     } else {
       return leftGeometry.isWithinDistance(rightGeometry, distance);
     }
+  }
+
+  /**
+   * Closed-interval planar distance test between two Box2D rectangles. Returns true if the minimum
+   * Euclidean distance between the rectangles is less than or equal to {@code distance}.
+   *
+   * <p>Overlapping or edge/corner-touching boxes have distance 0 and therefore match for any {@code
+   * distance >= 0}. Inverted bounds throw for the same reason {@link #boxIntersects(Box2D, Box2D)}
+   * does — planar predicates have no defined meaning on inverted intervals.
+   */
+  public static boolean dWithin(Box2D a, Box2D b, double distance) {
+    requireOrderedPlanarBox(a, "a");
+    requireOrderedPlanarBox(b, "b");
+    double dx = Math.max(0.0, Math.max(a.getXMin() - b.getXMax(), b.getXMin() - a.getXMax()));
+    double dy = Math.max(0.0, Math.max(a.getYMin() - b.getYMax(), b.getYMin() - a.getYMax()));
+    // Compare squared distance to avoid a sqrt; bail out fast if either delta already exceeds
+    // the supplied radius.
+    if (dx > distance || dy > distance) return false;
+    return dx * dx + dy * dy <= distance * distance;
+  }
+
+  /**
+   * 3D Euclidean distance-within predicate for Geometry inputs. Mirrors PostGIS {@code
+   * ST_3DDWithin}. Returns true iff the minimum 3D Euclidean distance between the two geometries is
+   * less than or equal to {@code distance}. Coordinates without a Z dimension are treated as {@code
+   * z = 0}, matching PostGIS and the {@code ST_Box3D} convention.
+   *
+   * <p>JTS's {@link Distance3DOp} only tolerates NaN Z on point-point inputs; segment-based
+   * distance math throws {@code IllegalArgumentException: Ordinates must not be NaN}. Fold missing
+   * Z to 0 on both arguments before dispatching so XY LineString / Polygon inputs (or any mix of XY
+   * and XYZ geometry kinds) behave as documented.
+   */
+  public static boolean dWithin3D(Geometry leftGeometry, Geometry rightGeometry, double distance) {
+    Geometry left = Functions.force3D(leftGeometry);
+    Geometry right = Functions.force3D(rightGeometry);
+    return new Distance3DOp(left, right).distance() <= distance;
+  }
+
+  /**
+   * Closed-interval 3D Euclidean distance test between two Box3D rectangular cuboids. Returns true
+   * if the minimum 3D Euclidean distance between the cuboids is less than or equal to {@code
+   * distance}.
+   *
+   * <p>Overlapping or edge/face/corner-touching boxes have distance 0 and therefore match for any
+   * {@code distance >= 0}. Inverted bounds throw for the same reason {@link #box3dIntersects(Box3D,
+   * Box3D)} does — Z has no wraparound convention, so all three axes must be ordered.
+   */
+  public static boolean dWithin3D(Box3D a, Box3D b, double distance) {
+    requireOrderedBox3D(a, "a");
+    requireOrderedBox3D(b, "b");
+    double dx = Math.max(0.0, Math.max(a.getXMin() - b.getXMax(), b.getXMin() - a.getXMax()));
+    double dy = Math.max(0.0, Math.max(a.getYMin() - b.getYMax(), b.getYMin() - a.getYMax()));
+    double dz = Math.max(0.0, Math.max(a.getZMin() - b.getZMax(), b.getZMin() - a.getZMax()));
+    if (dx > distance || dy > distance || dz > distance) return false;
+    return dx * dx + dy * dy + dz * dz <= distance * distance;
   }
 
   public static String relate(Geometry leftGeometry, Geometry rightGeometry) {

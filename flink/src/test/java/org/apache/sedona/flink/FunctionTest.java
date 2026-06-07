@@ -30,6 +30,7 @@ import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.types.Row;
+import org.apache.sedona.common.geometryObjects.Box2D;
 import org.apache.sedona.flink.expressions.Functions;
 import org.apache.sedona.flink.expressions.FunctionsProj4;
 import org.datasyslab.proj4sedona.core.Proj;
@@ -439,6 +440,42 @@ public class FunctionTest extends TestBase {
   }
 
   @Test
+  public void testBox2D() {
+    Table t =
+        tableEnv.sqlQuery(
+            "SELECT ST_Box2D(ST_GeomFromText('POLYGON((1 2, 1 5, 4 5, 4 2, 1 2))')) AS bbox");
+    Box2D bbox = (Box2D) first(t).getField(0);
+    assertEquals(1.0, bbox.getXMin(), 0.0);
+    assertEquals(2.0, bbox.getYMin(), 0.0);
+    assertEquals(4.0, bbox.getXMax(), 0.0);
+    assertEquals(5.0, bbox.getYMax(), 0.0);
+
+    // null and empty inputs propagate to NULL.
+    Table tNull =
+        tableEnv.sqlQuery(
+            "SELECT ST_Box2D(ST_GeomFromText('POINT EMPTY')) AS empty_bbox,"
+                + " ST_Box2D(ST_GeomFromText(CAST(NULL AS STRING))) AS null_bbox");
+    Row row = first(tNull);
+    assertNull(row.getField(0));
+    assertNull(row.getField(1));
+  }
+
+  @Test
+  public void testBox2DAsTextAndAccessors() {
+    Table t =
+        tableEnv.sqlQuery(
+            "WITH bx AS ("
+                + " SELECT ST_Box2D(ST_GeomFromText('POLYGON((1 2, 1 5, 4 5, 4 2, 1 2))')) AS b)"
+                + " SELECT ST_AsText(b), ST_XMin(b), ST_YMin(b), ST_XMax(b), ST_YMax(b) FROM bx");
+    Row row = first(t);
+    assertEquals("BOX(1.0 2.0, 4.0 5.0)", row.getField(0));
+    assertEquals(1.0, row.getField(1));
+    assertEquals(2.0, row.getField(2));
+    assertEquals(4.0, row.getField(3));
+    assertEquals(5.0, row.getField(4));
+  }
+
+  @Test
   public void testEnvelope() {
     Table linestringTable = createLineStringTable(1);
     linestringTable =
@@ -496,6 +533,34 @@ public class FunctionTest extends TestBase {
                 .getField(0);
     expected = "POLYGON Z((44 45 4, 44 85 4, 86 85 0, 86 45 0, 44 45 4))";
     assertEquals(expected, actual);
+  }
+
+  @Test
+  public void testExpandBox2D() {
+    Table t =
+        tableEnv.sqlQuery(
+            "SELECT ST_Expand(ST_Box2D(ST_GeomFromText('POLYGON((1 2, 1 5, 4 5, 4 2, 1 2))')), 1.0) AS uniform,"
+                + " ST_Expand(ST_Box2D(ST_GeomFromText('POLYGON((1 2, 1 5, 4 5, 4 2, 1 2))')), 2.0, 0.5) AS per_axis");
+    Row row = first(t);
+    Box2D uniform = (Box2D) row.getField(0);
+    assertEquals(0.0, uniform.getXMin(), 0.0);
+    assertEquals(1.0, uniform.getYMin(), 0.0);
+    assertEquals(5.0, uniform.getXMax(), 0.0);
+    assertEquals(6.0, uniform.getYMax(), 0.0);
+    Box2D perAxis = (Box2D) row.getField(1);
+    assertEquals(-1.0, perAxis.getXMin(), 0.0);
+    assertEquals(1.5, perAxis.getYMin(), 0.0);
+    assertEquals(6.0, perAxis.getXMax(), 0.0);
+    assertEquals(5.5, perAxis.getYMax(), 0.0);
+
+    // NULL Box2D input propagates to NULL for both signatures.
+    Table tNull =
+        tableEnv.sqlQuery(
+            "SELECT ST_Expand(ST_Box2D(ST_GeomFromText(CAST(NULL AS STRING))), 1.0) AS u,"
+                + " ST_Expand(ST_Box2D(ST_GeomFromText(CAST(NULL AS STRING))), 1.0, 1.0) AS p");
+    Row nullRow = first(tNull);
+    assertNull(nullRow.getField(0));
+    assertNull(nullRow.getField(1));
   }
 
   @Test
@@ -2020,6 +2085,18 @@ public class FunctionTest extends TestBase {
     assertEquals(
         "MULTILINESTRING ((0 0, 0.5 0.5), (0.5 0.5, 1 1), (1 1, 1.5 1.5, 2 2))",
         ((Geometry) first(pointTable).getField(0)).norm().toText());
+  }
+
+  @Test
+  public void testSplitMultiPointByPolygon() {
+    // ST_Split on a MultiPoint by a Polygon partitions points by polygon coverage.
+    Table table =
+        tableEnv.sqlQuery(
+            "SELECT ST_Split(ST_GeomFromWKT('MULTIPOINT ((1 1), (5 5), (15 15))'),"
+                + " ST_GeomFromWKT('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'))");
+    assertEquals(
+        "GEOMETRYCOLLECTION (MULTIPOINT ((1 1), (5 5)), MULTIPOINT ((15 15)))",
+        ((Geometry) first(table).getField(0)).norm().toText());
   }
 
   @Test

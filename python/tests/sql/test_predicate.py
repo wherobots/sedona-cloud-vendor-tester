@@ -26,6 +26,30 @@ from tests.test_base import TestBase
 
 class TestPredicate(TestBase):
 
+    def test_st_intersects_and_contains_on_box2d(self):
+        df = self.spark.sql("""
+            WITH t AS (
+              SELECT
+                ST_Box2D(ST_GeomFromText('POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))')) AS a,
+                ST_Box2D(ST_GeomFromText('POLYGON((2 2, 2 5, 5 5, 5 2, 2 2))'))      AS inside,
+                ST_Box2D(ST_GeomFromText('POLYGON((5 5, 5 11, 11 11, 11 5, 5 5))'))  AS overlap,
+                ST_Box2D(ST_GeomFromText('POLYGON((11 11, 11 12, 12 12, 12 11, 11 11))')) AS disjoint
+            )
+            SELECT
+              ST_Intersects(a, inside)   AS i_inside,
+              ST_Intersects(a, overlap)  AS i_overlap,
+              ST_Intersects(a, disjoint) AS i_disjoint,
+              ST_Contains(a, inside)     AS c_inside,
+              ST_Contains(a, overlap)    AS c_overlap
+            FROM t
+            """)
+        row = df.first()
+        assert row[0] is True
+        assert row[1] is True
+        assert row[2] is False
+        assert row[3] is True
+        assert row[4] is False
+
     def test_st_contains(self):
         point_csv_df = (
             self.spark.read.format("csv")

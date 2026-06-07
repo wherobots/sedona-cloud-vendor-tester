@@ -262,6 +262,44 @@ class functionTestScala
       assertEquals(expected, actual)
     }
 
+    it("Passed ST_Expand for Box2D") {
+      val df = sparkSession.sql("""
+        WITH t AS (
+          SELECT ST_Box2D(ST_GeomFromText('POLYGON((1 2, 1 5, 4 5, 4 2, 1 2))')) AS bbox,
+                 ST_Box2D(ST_GeomFromText(NULL))                                  AS bbox_null
+        )
+        SELECT
+          ST_Expand(bbox, 1.0)             AS uniform,
+          ST_Expand(bbox, 2.0, 0.5)        AS per_axis,
+          ST_Expand(bbox, -1.0)            AS shrink,
+          ST_Expand(bbox_null, 1.0)        AS null_uniform,
+          ST_Expand(bbox_null, 1.0, 1.0)   AS null_per_axis
+        FROM t
+      """)
+      val row = df.collect()(0)
+
+      val uniform = row.getAs[Box2D]("uniform")
+      assert(uniform.getXMin == 0.0)
+      assert(uniform.getYMin == 1.0)
+      assert(uniform.getXMax == 5.0)
+      assert(uniform.getYMax == 6.0)
+
+      val perAxis = row.getAs[Box2D]("per_axis")
+      assert(perAxis.getXMin == -1.0)
+      assert(perAxis.getYMin == 1.5)
+      assert(perAxis.getXMax == 6.0)
+      assert(perAxis.getYMax == 5.5)
+
+      val shrink = row.getAs[Box2D]("shrink")
+      assert(shrink.getXMin == 2.0)
+      assert(shrink.getYMin == 3.0)
+      assert(shrink.getXMax == 3.0)
+      assert(shrink.getYMax == 4.0)
+
+      assert(row.isNullAt(3))
+      assert(row.isNullAt(4))
+    }
+
     it("Passed ST_YMax") {
       var test = sparkSession.sql(
         "SELECT ST_YMax(ST_GeomFromWKT('POLYGON ((-3 -3, 3 -3, 3 -2, -3 -1, -3 -3))'))")
@@ -2982,6 +3020,9 @@ class functionTestScala
     val geomTestCases = Map(
       ("'LINESTRING (0 0, 1.5 1.5, 2 2)'", "'MULTIPOINT (0.5 0.5, 1 1)'")
         -> "MULTILINESTRING ((0 0, 0.5 0.5), (0.5 0.5, 1 1), (1 1, 1.5 1.5, 2 2))",
+      // Puntal input by polygonal blade: partition points covered by the polygon vs not.
+      ("'MULTIPOINT ((1 1), (5 5), (15 15))'", "'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'")
+        -> "GEOMETRYCOLLECTION (MULTIPOINT ((1 1), (5 5)), MULTIPOINT ((15 15)))",
       ("null", "'MULTIPOINT (0.5 0.5, 1 1)'")
         -> null,
       ("'LINESTRING (0 0, 1.5 1.5, 2 2)'", "null")
@@ -2990,7 +3031,7 @@ class functionTestScala
       var df =
         sparkSession.sql(s"SELECT ST_Split(ST_GeomFromText($target), ST_GeomFromText($blade))")
       var result = df.take(1)(0).get(0).asInstanceOf[Geometry]
-      var textResult = if (result == null) null else result.toText
+      var textResult = if (result == null) null else result.norm().toText
       assert(textResult == expected)
     }
   }

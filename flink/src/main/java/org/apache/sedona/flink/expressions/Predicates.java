@@ -20,6 +20,8 @@ package org.apache.sedona.flink.expressions;
 
 import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.functions.ScalarFunction;
+import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.flink.Box2DTypeSerializer;
 import org.apache.sedona.flink.GeometryTypeSerializer;
 import org.locationtech.jts.geom.Geometry;
 
@@ -41,9 +43,27 @@ public class Predicates {
                 rawSerializer = GeometryTypeSerializer.class,
                 bridgedTo = Geometry.class)
             Object o2) {
+      if (o1 == null || o2 == null) return null;
       Geometry geom1 = (Geometry) o1;
       Geometry geom2 = (Geometry) o2;
       return org.apache.sedona.common.Predicates.intersects(geom1, geom2);
+    }
+
+    /** Box2D-on-Box2D bbox intersection (closed interval). */
+    @DataTypeHint("Boolean")
+    public Boolean eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box2DTypeSerializer.class,
+                bridgedTo = Box2D.class)
+            Box2D a,
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box2DTypeSerializer.class,
+                bridgedTo = Box2D.class)
+            Box2D b) {
+      if (a == null || b == null) return null;
+      return org.apache.sedona.common.Predicates.boxIntersects(a, b);
     }
   }
 
@@ -64,9 +84,27 @@ public class Predicates {
                 rawSerializer = GeometryTypeSerializer.class,
                 bridgedTo = Geometry.class)
             Object o2) {
+      if (o1 == null || o2 == null) return null;
       Geometry geom1 = (Geometry) o1;
       Geometry geom2 = (Geometry) o2;
       return org.apache.sedona.common.Predicates.contains(geom1, geom2);
+    }
+
+    /** Box2D-on-Box2D bbox containment (closed interval). */
+    @DataTypeHint("Boolean")
+    public Boolean eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box2DTypeSerializer.class,
+                bridgedTo = Box2D.class)
+            Box2D a,
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box2DTypeSerializer.class,
+                bridgedTo = Box2D.class)
+            Box2D b) {
+      if (a == null || b == null) return null;
+      return org.apache.sedona.common.Predicates.boxContains(a, b);
     }
   }
 

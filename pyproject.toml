@@ -51,6 +51,7 @@ docs = [
   "mkdocs-git-revision-date-localized-plugin",
   "mkdocs-jupyter",
   "mkdocs-macros-plugin",
+  "mkdocs-static-i18n",
   "pymdown-extensions",
   "mike",
   "blacken-docs",
@@ -59,4 +60,7 @@ docs = [
   "sphinx==6.2.1",
   "sphinx_rtd_theme==3.0.2",
   "sphinx-autobuild",
+]
+dev = [
+    "prek>=0.4.0"
 ]

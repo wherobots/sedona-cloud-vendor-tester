@@ -651,6 +651,58 @@ class dataFrameAPITestScala extends TestBaseScala {
       assert(actualResult == expectedResult)
     }
 
+    it("Passed ST_Box3D") {
+      val geomDf =
+        sparkSession.sql("SELECT ST_GeomFromWKT('LINESTRING Z(0 0 -3, 5 10 7)') AS geom")
+      val actual = geomDf.select(ST_Box3D("geom")).first().get(0).toString
+      assert(actual == "BOX3D(0.0 0.0 -3.0, 5.0 10.0 7.0)")
+    }
+
+    it("Passed ST_3DMakeBox") {
+      val pointsDf =
+        sparkSession.sql("SELECT ST_PointZ(0.0, 0.0, 0.0) AS ll, ST_PointZ(2.0, 4.0, 6.0) AS ur")
+      val actual = pointsDf.select(ST_3DMakeBox("ll", "ur")).first().get(0).toString
+      assert(actual == "BOX3D(0.0 0.0 0.0, 2.0 4.0 6.0)")
+    }
+
+    it("Passed ST_Intersects on Box3D inputs") {
+      val boxesDf = sparkSession.sql(
+        "SELECT ST_3DMakeBox(ST_PointZ(0, 0, 0), ST_PointZ(5, 5, 5)) AS a, " +
+          "ST_3DMakeBox(ST_PointZ(1, 1, 1), ST_PointZ(2, 2, 2)) AS b, " +
+          "ST_3DMakeBox(ST_PointZ(10, 10, 10), ST_PointZ(11, 11, 11)) AS c")
+      val row = boxesDf.select(ST_Intersects("a", "b"), ST_Intersects("a", "c")).first()
+      assert(row.getBoolean(0))
+      assert(!row.getBoolean(1))
+    }
+
+    it("Passed ST_Contains on Box3D inputs") {
+      val boxesDf = sparkSession.sql(
+        "SELECT ST_3DMakeBox(ST_PointZ(0, 0, 0), ST_PointZ(5, 5, 5)) AS a, " +
+          "ST_3DMakeBox(ST_PointZ(1, 1, 1), ST_PointZ(2, 2, 2)) AS b, " +
+          "ST_3DMakeBox(ST_PointZ(4, 4, 4), ST_PointZ(6, 6, 6)) AS c")
+      val row = boxesDf.select(ST_Contains("a", "b"), ST_Contains("a", "c")).first()
+      assert(row.getBoolean(0))
+      assert(!row.getBoolean(1))
+    }
+
+    it("Passed ST_3DDWithin") {
+      val ptsDf = sparkSession.sql(
+        "SELECT ST_PointZ(0, 0, 0) AS a, ST_PointZ(1, 1, 1) AS b, ST_PointZ(5, 5, 5) AS c")
+      // 3D distance from a to b is sqrt(3) ≈ 1.732; threshold 2.0 includes, 1.0 excludes the a→c pair.
+      val row = ptsDf
+        .select(ST_3DDWithin("a", "b", 2.0), ST_3DDWithin("a", "c", 1.0))
+        .first()
+      assert(row.getBoolean(0))
+      assert(!row.getBoolean(1))
+    }
+
+    it("Passed ST_3DExtent") {
+      val pointsDf = sparkSession.sql("SELECT explode(array(" +
+        "ST_PointZ(0.0, 0.0, -1.0), ST_PointZ(2.0, 4.0, 6.0), ST_PointZ(1.0, 1.0, 1.0))) AS geom")
+      val actual = pointsDf.select(ST_3DExtent("geom")).first().get(0).toString
+      assert(actual == "BOX3D(0.0 0.0 -1.0, 2.0 4.0 6.0)")
+    }
+
     it("Passed ST_Expand") {
       val baseDf = sparkSession.sql(
         "SELECT ST_GeomFromWKT('POLYGON ((50 50 1, 50 80 2, 80 80 3, 80 50 2, 50 50 1))') as geom")

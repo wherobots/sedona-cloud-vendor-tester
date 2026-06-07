@@ -31,6 +31,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.sedona.common.S2Geography.Geography;
 import org.apache.sedona.common.approximate.StraightSkeleton;
 import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.common.geometryObjects.Box3D;
 import org.apache.sedona.common.geometryObjects.Circle;
 import org.apache.sedona.common.jts2geojson.GeoJSONWriter;
 import org.apache.sedona.common.sphere.Spheroid;
@@ -233,6 +234,28 @@ public class Functions {
 
   public static Geometry expand(Geometry geometry, double deltaX, double deltaY) {
     return expand(geometry, deltaX, deltaY, 0);
+  }
+
+  /** Expand a {@link Box2D} uniformly on both axes. NULL on null input. */
+  public static Box2D expand(Box2D box, double uniformDelta) {
+    return expand(box, uniformDelta, uniformDelta);
+  }
+
+  /**
+   * Expand a {@link Box2D} by the given per-axis deltas. Negative deltas shrink the bbox; if a
+   * negative delta produces {@code xmin > xmax} or {@code ymin > ymax}, the resulting Box2D is
+   * returned as-is (callers can detect the degenerate result via the accessor functions). NULL on
+   * null input.
+   */
+  public static Box2D expand(Box2D box, double deltaX, double deltaY) {
+    if (box == null) {
+      return null;
+    }
+    return new Box2D(
+        box.getXMin() - deltaX,
+        box.getYMin() - deltaY,
+        box.getXMax() + deltaX,
+        box.getYMax() + deltaY);
   }
 
   public static Geometry expand(Geometry geometry, double deltaX, double deltaY, double deltaZ) {
@@ -604,6 +627,10 @@ public class Functions {
     return Box2D.fromGeometry(geometry);
   }
 
+  public static Box3D box3D(Geometry geometry) {
+    return Box3D.fromGeometry(geometry);
+  }
+
   public static Double distance(Geometry left, Geometry right) {
     if (left.isEmpty() || right.isEmpty()) {
       return null;
@@ -703,6 +730,10 @@ public class Functions {
     return box == null ? null : box.getXMin();
   }
 
+  public static Double xMin(Box3D box) {
+    return box == null ? null : box.getXMin();
+  }
+
   public static Double xMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
@@ -713,6 +744,10 @@ public class Functions {
   }
 
   public static Double xMax(Box2D box) {
+    return box == null ? null : box.getXMax();
+  }
+
+  public static Double xMax(Box3D box) {
     return box == null ? null : box.getXMax();
   }
 
@@ -729,6 +764,10 @@ public class Functions {
     return box == null ? null : box.getYMin();
   }
 
+  public static Double yMin(Box3D box) {
+    return box == null ? null : box.getYMin();
+  }
+
   public static Double yMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
@@ -742,6 +781,10 @@ public class Functions {
     return box == null ? null : box.getYMax();
   }
 
+  public static Double yMax(Box3D box) {
+    return box == null ? null : box.getYMax();
+  }
+
   public static Double zMax(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double max = -Double.MAX_VALUE;
@@ -752,6 +795,10 @@ public class Functions {
     return max == -Double.MAX_VALUE ? null : max;
   }
 
+  public static Double zMax(Box3D box) {
+    return box == null ? null : box.getZMax();
+  }
+
   public static Double zMin(Geometry geometry) {
     Coordinate[] points = geometry.getCoordinates();
     double min = Double.MAX_VALUE;
@@ -760,6 +807,10 @@ public class Functions {
       min = Math.min(points[i].getZ(), min);
     }
     return min == Double.MAX_VALUE ? null : min;
+  }
+
+  public static Double zMin(Box3D box) {
+    return box == null ? null : box.getZMin();
   }
 
   public static boolean hasM(Geometry geom) {
@@ -892,6 +943,38 @@ public class Functions {
         + box.getXMax()
         + " "
         + box.getYMax()
+        + ")";
+  }
+
+  /**
+   * PostGIS-format text for a Box3D: {@code BOX3D(xmin ymin zmin, xmax ymax zmax)}. NULL on null
+   * input.
+   *
+   * <p>Values are emitted exactly as stored on the Box3D — this method does not normalize the
+   * corners. Sedona's Box3D allows inverted bounds (e.g. {@code xmin > xmax}); that ordering is
+   * reserved for the same future antimeridian-wraparound semantics noted on {@link
+   * #box2dAsText(Box2D)}. The text faithfully reflects what {@code ST_XMin} / {@code ST_XMax} /
+   * etc. would return.
+   *
+   * <p>Not WKT (WKT has no {@code BOX3D} type), so like {@link #box2dAsText(Box2D)} this lives
+   * outside the {@code asWKT} family to keep that API a true geometry serializer.
+   */
+  public static String box3dAsText(Box3D box) {
+    if (box == null) {
+      return null;
+    }
+    return "BOX3D("
+        + box.getXMin()
+        + " "
+        + box.getYMin()
+        + " "
+        + box.getZMin()
+        + ", "
+        + box.getXMax()
+        + " "
+        + box.getYMax()
+        + " "
+        + box.getZMax()
         + ")";
   }
 

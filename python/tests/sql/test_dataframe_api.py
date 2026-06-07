@@ -26,6 +26,8 @@ from pyspark.sql import functions as f
 from shapely.geometry.base import BaseGeometry
 from tests.test_base import TestBase
 
+from sedona.spark.core.geom.box2d import Box2D
+from sedona.spark.core.geom.box3d import Box3D
 from sedona.spark.core.geom.geography import Geography
 from sedona.spark.sql import st_aggregates as sta
 from sedona.spark.sql import st_constructors as stc
@@ -167,6 +169,33 @@ test_configurations = [
         "constructor",
         "ST_AsText(geom)",
         "POINT M(0 1 2)",
+    ),
+    (
+        stc.ST_MakeBox2D,
+        ("a", "b"),
+        "two_points",
+        "",
+        # two_points has a=(0,0,0), b=(3,0,4); ST_MakeBox2D drops Z, so y is 0 for both.
+        Box2D(0.0, 0.0, 3.0, 0.0),
+    ),
+    (
+        stc.ST_3DMakeBox,
+        ("a", "b"),
+        "two_points",
+        "",
+        # two_points has a=(0,0,0), b=(3,0,4).
+        Box3D(0.0, 0.0, 0.0, 3.0, 0.0, 4.0),
+    ),
+    (
+        stc.ST_GeomFromBox2D,
+        (
+            lambda: stc.ST_MakeBox2D(
+                f.expr("ST_Point(1.0, 2.0)"), f.expr("ST_Point(4.0, 5.0)")
+            ),
+        ),
+        "min_max_x_y",
+        "ST_AsText(geom)",
+        "POLYGON ((1 2, 1 5, 4 5, 4 2, 1 2))",
     ),
     (
         stc.ST_MakeEnvelope,
@@ -520,6 +549,21 @@ test_configurations = [
         ],
     ),
     (stf.ST_EndPoint, ("line",), "linestring_geom", "", "POINT (5 0)"),
+    (
+        stf.ST_Box2D,
+        ("line",),
+        "linestring_geom",
+        "",
+        Box2D(0.0, 0.0, 5.0, 0.0),
+    ),
+    (
+        stf.ST_Box3D,
+        ("line",),
+        "linestring_geom",
+        "",
+        # linestring_geom is 2D so Z folds to 0 per PostGIS semantics.
+        Box3D(0.0, 0.0, 0.0, 5.0, 0.0, 0.0),
+    ),
     (
         stf.ST_Envelope,
         ("geom",),
@@ -1166,6 +1210,38 @@ test_configurations = [
         "",
         True,
     ),
+    (
+        stp.ST_Intersects,
+        (
+            lambda: f.expr("ST_3DMakeBox(ST_PointZ(0, 0, 0), ST_PointZ(5, 5, 5))"),
+            lambda: f.expr("ST_3DMakeBox(ST_PointZ(1, 1, 1), ST_PointZ(2, 2, 2))"),
+        ),
+        "triangle_geom",
+        "",
+        True,
+    ),
+    (
+        stp.ST_Contains,
+        (
+            lambda: f.expr("ST_3DMakeBox(ST_PointZ(0, 0, 0), ST_PointZ(5, 5, 5))"),
+            lambda: f.expr("ST_3DMakeBox(ST_PointZ(1, 1, 1), ST_PointZ(2, 2, 2))"),
+        ),
+        "triangle_geom",
+        "",
+        True,
+    ),
+    (
+        stp.ST_3DDWithin,
+        (
+            lambda: f.expr("ST_PointZ(0.0, 0.0, 0.0)"),
+            lambda: f.expr("ST_PointZ(1.0, 1.0, 1.0)"),
+            # 3D distance is sqrt(3) ≈ 1.732; 2.0 includes it.
+            2.0,
+        ),
+        "triangle_geom",
+        "",
+        True,
+    ),
     (stp.ST_Crosses, ("line", "poly"), "line_crossing_poly", "", True),
     (stp.ST_Disjoint, ("a", "b"), "two_points", "", True),
     (
@@ -1283,6 +1359,21 @@ test_configurations = [
         "exploded_points",
         "",
         "MULTIPOINT ((0 0), (1 1))",
+    ),
+    (
+        sta.ST_Extent,
+        ("geom",),
+        "exploded_points",
+        "",
+        Box2D(0.0, 0.0, 1.0, 1.0),
+    ),
+    (
+        sta.ST_3DExtent,
+        ("geom",),
+        "exploded_points",
+        "",
+        # 2D inputs fold Z=0 per PostGIS semantics.
+        Box3D(0.0, 0.0, 0.0, 1.0, 1.0, 0.0),
     ),
     # Test aliases for *_Aggr functions with *_Agg suffix
     (

@@ -74,15 +74,23 @@ abstract class ST_Predicate
 }
 
 /**
- * Test if leftGeometry full contains rightGeometry. Supports both Geometry (JTS) and Geography
- * (S2) inputs via InferredExpression dual dispatch.
+ * Test if leftGeometry full contains rightGeometry. Polymorphic over input type:
+ *
+ *   - `(Geometry, Geometry)` — topological containment via JTS.
+ *   - `(Geography, Geography)` — topological containment via S2.
+ *   - `(Box2D, Box2D)` — closed-interval bbox containment on both axes (matches PostGIS `~` on
+ *     box2d). Throws on inverted bounds (`xmin > xmax` / `ymin > ymax`).
+ *   - `(Box3D, Box3D)` — closed-interval bbox containment on all three axes. Throws on inverted
+ *     bounds on any axis.
  *
  * @param inputExpressions
  */
 private[apache] case class ST_Contains(inputExpressions: Seq[Expression])
     extends InferredExpression(
       inferrableFunction2(Predicates.contains),
-      inferrableFunction2(org.apache.sedona.common.geography.Functions.contains)) {
+      inferrableFunction2(org.apache.sedona.common.geography.Functions.contains),
+      inferrableFunction2(Predicates.boxContains _),
+      inferrableFunction2(Predicates.box3dContains _)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -90,15 +98,24 @@ private[apache] case class ST_Contains(inputExpressions: Seq[Expression])
 }
 
 /**
- * Test if leftGeometry full intersects rightGeometry. Supports both Geometry (JTS) and Geography
- * (S2) inputs via InferredExpression dual dispatch.
+ * Test if leftGeometry full intersects rightGeometry. Polymorphic over input type:
+ *
+ *   - `(Geometry, Geometry)` — topological intersection via JTS.
+ *   - `(Geography, Geography)` — topological intersection via S2.
+ *   - `(Box2D, Box2D)` — closed-interval bbox intersection on both axes (matches PostGIS `&&` on
+ *     box2d). Edge- and corner-touching boxes count as intersecting. Throws on inverted bounds.
+ *   - `(Box3D, Box3D)` — closed-interval bbox intersection on all three axes (matches PostGIS
+ *     `&&&` on box3d). Edge-, face-, and corner-touching boxes count as intersecting. Throws on
+ *     inverted bounds on any axis.
  *
  * @param inputExpressions
  */
 private[apache] case class ST_Intersects(inputExpressions: Seq[Expression])
     extends InferredExpression(
       inferrableFunction2(Predicates.intersects),
-      inferrableFunction2(org.apache.sedona.common.geography.Functions.intersects)) {
+      inferrableFunction2(org.apache.sedona.common.geography.Functions.intersects),
+      inferrableFunction2(Predicates.boxIntersects _),
+      inferrableFunction2(Predicates.box3dIntersects _)) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)
@@ -283,9 +300,28 @@ private[apache] case class ST_OrderingEquals(inputExpressions: Seq[Expression])
 
 private[apache] case class ST_DWithin(inputExpressions: Seq[Expression])
     extends InferredExpression(
-      inferrableFunction3(Predicates.dWithin),
+      inferrableFunction3((l: Geometry, r: Geometry, d: Double) => Predicates.dWithin(l, r, d)),
       inferrableFunction4(Predicates.dWithin),
-      inferrableFunction3(org.apache.sedona.common.geography.Functions.dWithin)) {
+      inferrableFunction3(org.apache.sedona.common.geography.Functions.dWithin),
+      inferrableFunction3(
+        (
+            a: org.apache.sedona.common.geometryObjects.Box2D,
+            b: org.apache.sedona.common.geometryObjects.Box2D,
+            distance: Double) => Predicates.dWithin(a, b, distance))) {
+
+  protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
+    copy(inputExpressions = newChildren)
+  }
+}
+
+private[apache] case class ST_3DDWithin(inputExpressions: Seq[Expression])
+    extends InferredExpression(
+      inferrableFunction3((l: Geometry, r: Geometry, d: Double) => Predicates.dWithin3D(l, r, d)),
+      inferrableFunction3(
+        (
+            a: org.apache.sedona.common.geometryObjects.Box3D,
+            b: org.apache.sedona.common.geometryObjects.Box3D,
+            distance: Double) => Predicates.dWithin3D(a, b, distance))) {
 
   protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]) = {
     copy(inputExpressions = newChildren)

@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
 import org.apache.spark.sql.execution.datasources.LogicalRelation
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
-import org.apache.spark.sql.sedona_sql.UDT.{GeographyUDT, RasterUDT}
+import org.apache.spark.sql.sedona_sql.UDT.{Box2DUDT, Box3DUDT, GeographyUDT, RasterUDT}
 import org.apache.spark.sql.sedona_sql.expressions.{ST_KNN, _}
 import org.apache.spark.sql.sedona_sql.expressions.raster._
 import org.apache.spark.sql.sedona_sql.optimization.ExpressionUtils.splitConjunctivePredicates
@@ -67,6 +67,24 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
   // Other ST_Predicates reject Geography inputs at analysis time, so no guard is needed there.
   private def isGeographyInput(shape: Expression): Boolean =
     shape.dataType.isInstanceOf[GeographyUDT]
+
+  /**
+   * Both shape expressions resolve to Box2DUDT. The executors materialise each Box2D as a
+   * rectangular Polygon so the existing partitioner / R-tree / refine machinery applies
+   * unchanged.
+   */
+  private def isBox2DPair(left: Expression, right: Expression): Boolean =
+    left.dataType.isInstanceOf[Box2DUDT] && right.dataType.isInstanceOf[Box2DUDT]
+
+  /**
+   * Either shape expression resolves to Box3DUDT. The join executors only know how to materialise
+   * Geometry / Geography / Box2D values; Box3D inputs would fall into the generic shape path,
+   * cast as a Geometry binary, and fail at runtime. Skip join planning so the predicate falls
+   * back to row-by-row evaluation where the scalar Box3D overload of `ST_Intersects` /
+   * `ST_Contains` handles it correctly.
+   */
+  private def hasBox3DInput(left: Expression, right: Expression): Boolean =
+    left.dataType.isInstanceOf[Box3DUDT] || right.dataType.isInstanceOf[Box3DUDT]
 
   /**
    * Build a JoinQueryDetection for an InferredExpression predicate (ST_Contains, ST_Within, ...)
@@ -174,6 +192,32 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
         Some(condition)))
   }
 
+  /**
+   * Build a [[JoinQueryDetection]] for [[RS_DWithin]]. The coarse spatial join uses an expanded
+   * WGS84 envelope (driven by `distance`) and falls back to the per-row predicate for refinement,
+   * matching the pattern used for [[org.apache.spark.sql.sedona_sql.expressions.ST_DWithin]].
+   */
+  private def getRasterDistanceJoinDetection(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      predicate: RS_DWithin,
+      extraCondition: Option[Expression] = None): Option[JoinQueryDetection] = {
+    val leftShape = predicate.inputExpressions.head
+    val rightShape = predicate.inputExpressions(1)
+    val distance = predicate.inputExpressions(2)
+    val condition = extraCondition.map(And(_, predicate)).getOrElse(predicate)
+    Some(
+      JoinQueryDetection(
+        left,
+        right,
+        leftShape,
+        rightShape,
+        SpatialPredicate.INTERSECTS,
+        isGeography = false,
+        extraCondition = Some(condition),
+        distance = Some(distance)))
+  }
+
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
     case Join(left, right, joinType, condition, JoinHint(leftHint, rightHint))
         if optimizationEnabled(left, right, condition) =>
@@ -211,6 +255,41 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
             // ST_Predicate) so they can't sit inside getJoinDetection; they're also the only
             // predicates currently accepting Geography inputs.
             //
+            // Box2D-on-Box2D variants of ST_Intersects / ST_Contains. Match these first so they
+            // don't fall through to the Geometry / Geography paths. ST_Contains over Box2D maps
+            // to SpatialPredicate.COVERS (closed-interval containment — JTS `contains` would
+            // reject edge-touching cases).
+            case ST_Intersects(Seq(leftShape, rightShape))
+                if isBox2DPair(leftShape, rightShape) =>
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.INTERSECTS,
+                  isGeography = false,
+                  extraCondition))
+            case ST_Contains(Seq(leftShape, rightShape)) if isBox2DPair(leftShape, rightShape) =>
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.COVERS,
+                  isGeography = false,
+                  extraCondition))
+            // Box3D inputs short-circuit out of join planning. The join executors only handle
+            // Geometry / Geography / Box2D; treating a Box3D shape as a Geometry binary fails at
+            // runtime. Returning None drops to row-by-row evaluation where the scalar Box3D
+            // overload of ST_Intersects / ST_Contains handles the predicate correctly.
+            case ST_Intersects(Seq(leftShape, rightShape))
+                if hasBox3DInput(leftShape, rightShape) =>
+              None
+            case ST_Contains(Seq(leftShape, rightShape))
+                if hasBox3DInput(leftShape, rightShape) =>
+              None
             // ST_Contains: when either operand is GeographyUDT we still detect the join here and
             // set `geographyShape = true`; planBroadcastJoin will route the work to the
             // Geography-aware index/refine path. Non-broadcast plans bail out in `apply` below
@@ -295,6 +374,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
               getJoinDetection(left, right, pred, extraCondition)
             case pred: RS_Predicate =>
               getRasterJoinDetection(left, right, pred, extraCondition)
+            case pred: RS_DWithin =>
+              getRasterDistanceJoinDetection(left, right, pred, extraCondition)
             case ST_DWithin(Seq(leftShape, rightShape, distance)) =>
               val geographyShape =
                 isGeographyInput(leftShape) || isGeographyInput(rightShape)
@@ -878,9 +959,10 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
         case (None, _, true, _, true) =>
           throw new UnsupportedOperationException(
             "Geography joins are not yet supported for raster predicates")
-        case (Some(_), _, _, _, true) =>
+        case (Some(_), _, true, _, true) =>
           throw new UnsupportedOperationException(
-            "Distance joins are not supported for raster predicates")
+            "Geography distance joins are not yet supported for raster predicates")
+        case (Some(_), _, false, _, true) => "RS_DWithin"
       }
     val (distanceOnIndexSide, distanceOnStreamSide) = distance
       .map { distanceExpr =>

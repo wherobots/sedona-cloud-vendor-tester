@@ -16,11 +16,11 @@
 # under the License.
 
 ---
-# https://pre-commit.com/#installation
+# https://prek.j178.dev/
 default_stages: [pre-commit, pre-push]
 default_language_version:
   python: python3
-  node: 24.13.0
+  node: 24.16.0
 minimum_pre_commit_version: '3.2.0'
 repos:
   - repo: meta
@@ -40,13 +40,21 @@ repos:
         files: ^README\.md$
   - repo: local
     hooks:
-      - id: npm-install
+      - id: docs-overrides-install
+        name: Install docs-overrides Node dependencies
+        entry: bash -c "cd docs-overrides && npm install"
+        language: system
+        pass_filenames: false
+        files: ^docs-overrides/(package\.json|package-lock\.json)$
+        description: Ensures local node_modules match the lockfile
+        stages: [manual]
+      - id: zeppelin-install
         name: Install Zeppelin Node dependencies
+        description: Ensures local node_modules match the lockfile
         entry: bash -c "cd zeppelin && npm install"
         language: system
         pass_filenames: false
         files: ^zeppelin/(package\.json|package-lock\.json)$
-        description: Ensures local node_modules match the lockfile
         stages: [manual]
       - id: prettier
         name: run prettier
@@ -54,20 +62,16 @@ repos:
         entry: prettier --write '**/*.js' '**/*.yaml' '**/*.yml'
         files: \.(js|ya?ml)$
         language: node
-        additional_dependencies: ['prettier@3.8.1']
+        additional_dependencies: ['prettier@3.8.3']
         pass_filenames: false
       - id: maven-spotless-apply
         name: maven spotless apply
         description: automatically formats Java and Scala code using mvn spotless:apply.
         entry: mvn spotless:apply
-        language: system # Indicates that the 'entry' command should be run directly as a system command.
-        types: [java, scala] # Specifies that this hook should run on Java and Scala files.
-        pass_filenames:
-          false # Crucial: tells pre-commit NOT to pass filenames as arguments to 'mvn spotless:apply'.
-          # Spotless typically scans the whole project based on its configuration.
-        always_run:
-          true # Ensures this hook runs even if no Java files are changed.
-          # This is useful for spotless:apply which might affect files not staged.
+        language: system
+        types: [java, scala]
+        pass_filenames: false # Crucial: tells pre-commit NOT to pass filenames as arguments to 'mvn spotless:apply'. Spotless typically scans the whole project based on its configuration.
+        always_run: true # Ensures this hook runs even if no Java files are changed. This is useful for spotless:apply which might affect files not staged.
         stages: [manual]
       - id: check-zip-file-is-not-committed
         name: check no zip files are committed
@@ -80,19 +84,12 @@ repos:
       - id: check-makefiles-tabs
         name: check Makefiles files for tabs
         description: ensures that Makefiles are indented with tabs
-        entry: ./scripts/pre-commit/check_makefiles_for_tabs.sh # Path to your script
+        entry: ./scripts/pre-commit/check_makefiles_for_tabs.sh
         language: system
         files: '(?i)makefile$'
         pass_filenames: true # <-- Crucial change: pass filenames to the script
         types: [file] # Ensure only regular files are passed, not directories
         stages: [manual]
-      - id: validate-dependabot-yml
-        name: validate dependabot.yml
-        description: ensures the dependabot config file is valid
-        entry: validate-dependabot-yaml
-        language: node
-        additional_dependencies: ['@bugron/validate-dependabot-yaml@0.3.3']
-        files: ^\.github/dependabot\.yml$
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.6
     hooks:
@@ -301,12 +298,28 @@ repos:
       - id: forbid-tabs
         name: run forbid-tabs
         description: check the codebase for tabs
-        exclude: ^python/sedona/doc/make\.bat$|^spark/common/src/test/resources/.*$|(^|/)Makefile$|\.csv$|\.md$|\.tsv$
+        exclude: |
+          (?x)(
+            ^python/sedona/doc/make\.bat|
+            ^spark/common/src/test/resources/.*|
+            (^|/)Makefile|
+            \.csv|
+            \.md|
+            \.tsv
+          )$
       - id: remove-tabs
         name: run remove-tabs
         description: find and convert tabs to spaces
         args: [--whitespaces-count, '2']
-        exclude: ^python/sedona/doc/make\.bat$|^spark/common/src/test/resources/.*$|(^|/)Makefile$|\.csv$|\.md$|\.tsv$
+        exclude: |
+          (?x)(
+            ^python/sedona/doc/make\.bat|
+            ^spark/common/src/test/resources/.*|
+            (^|/)Makefile|
+            \.csv|
+            \.md|
+            \.tsv
+          )$
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.21.2
     hooks:
@@ -315,7 +328,7 @@ repos:
         description: a tool (and pre-commit hook) to automatically upgrade syntax for newer versions of the language
         args: [--py37-plus]
   - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: 26.3.1
+    rev: 26.5.1
     hooks:
       - id: black-jupyter
         name: run black-jupyter
@@ -328,7 +341,7 @@ repos:
         description: audits Python environments, requirements files and dependency trees for known security vulnerabilities, and can automatically fix them
         args: ['.']
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v22.1.4
+    rev: v22.1.5
     hooks:
       - id: clang-format
         name: run clang-format
@@ -356,7 +369,7 @@ repos:
         name: run gitleaks
         description: check for secrets with gitleaks
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.24.1
+    rev: v1.25.2
     hooks:
       - id: zizmor
         name: run zizmor
@@ -491,7 +504,7 @@ repos:
         name: run trailing-whitespace
         description: trims trailing whitespace
         args: [--markdown-linebreak-ext=md]
-        exclude: ^docs-overrides/main\.html$|\.Rd$
+        exclude: \.Rd$
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.48.0
     hooks:
@@ -502,6 +515,17 @@ repos:
         exclude: ^\.github/.*$
         types: [markdown]
         files: \.md$
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.37.2
+    hooks:
+      - id: check-citation-file-format
+        name: run check-citation-file-format
+        description: validate citation file format
+        files: ^CITATION\.cff$
+      - id: check-dependabot
+        name: validate dependabot.yml
+        description: ensures the dependabot config file is valid
+        files: ^\.github/dependabot\.yml$
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:
@@ -532,14 +556,19 @@ repos:
       - id: blacken-docs
         name: run blacken-docs
         description: run `black` on python code blocks in documentation files
-        additional_dependencies: [black==26.3.1]
+        additional_dependencies: [black==26.5.1]
   - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
     rev: 3.6.1
     hooks:
       - id: editorconfig-checker
         name: run editorconfig-checker
         description: a tool to verify that your files are in harmony with your .editorconfig
-        exclude: ^docs/image/.*$|^R/man/.*\.Rd$|^spark/common/src/test/resources/.*$
+        exclude: |
+          (?x)^(
+            docs/image/.*|
+            R/man/.*\.Rd|
+            spark/common/src/test/resources/.*
+          )$
         alias: ec
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12

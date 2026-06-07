@@ -58,6 +58,7 @@ object Catalog extends AbstractCatalog with Logging {
     function[ST_GeomFromWKB](),
     function[ST_GeomFromEWKB](),
     function[ST_GeomFromBox2D](),
+    function[ST_3DMakeBox](),
     function[ST_GeomFromGeoJSON](),
     function[ST_GeomFromGML](),
     function[ST_GeomFromKML](),
@@ -169,6 +170,7 @@ object Catalog extends AbstractCatalog with Logging {
     function[ST_Crosses](),
     function[ST_Disjoint](),
     function[ST_DWithin](),
+    function[ST_3DDWithin](),
     function[ST_Equals](),
     function[ST_Intersects](),
     function[ST_OrderingEquals](),
@@ -281,6 +283,7 @@ object Catalog extends AbstractCatalog with Logging {
   val boundingBoxExprs: Seq[FunctionDescription] = Seq(
     function[ST_BoundingDiagonal](),
     function[ST_Box2D](),
+    function[ST_Box3D](),
     function[ST_Envelope](),
     function[ST_Expand](),
     function[ST_MMax](),
@@ -415,7 +418,11 @@ object Catalog extends AbstractCatalog with Logging {
 
   // Raster-Predicates
   val rasterPredicateExprs: Seq[FunctionDescription] =
-    Seq(function[RS_Contains](), function[RS_Intersects](), function[RS_Within]())
+    Seq(
+      function[RS_Contains](),
+      function[RS_DWithin](),
+      function[RS_Intersects](),
+      function[RS_Within]())
 
   // Raster-Geometry-Functions (raster → geometry derivations)
   val rasterGeometryExprs: Seq[FunctionDescription] =
@@ -542,6 +549,7 @@ object Catalog extends AbstractCatalog with Logging {
     Seq(
       new ST_Envelope_Aggr,
       new ST_Extent,
+      new ST_3DExtent,
       new ST_Intersection_Aggr,
       new ST_Union_Aggr(),
       new ST_Collect_Agg())
