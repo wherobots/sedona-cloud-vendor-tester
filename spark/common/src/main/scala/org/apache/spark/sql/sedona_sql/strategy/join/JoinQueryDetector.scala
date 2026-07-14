@@ -77,14 +77,37 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
     left.dataType.isInstanceOf[Box2DUDT] && right.dataType.isInstanceOf[Box2DUDT]
 
   /**
-   * Either shape expression resolves to Box3DUDT. The join executors only know how to materialise
-   * Geometry / Geography / Box2D values; Box3D inputs would fall into the generic shape path,
-   * cast as a Geometry binary, and fail at runtime. Skip join planning so the predicate falls
-   * back to row-by-row evaluation where the scalar Box3D overload of `ST_Intersects` /
-   * `ST_Contains` handles it correctly.
+   * Both shape expressions resolve to Box3DUDT. The join executor materialises each Box3D as the
+   * XY footprint rectangle so the 2D partitioner / R-tree pipeline can prune candidate pairs on
+   * X/Y overlap. The Z axis is re-checked per candidate via the scalar Box3D predicate carried in
+   * `extraCondition`.
    */
-  private def hasBox3DInput(left: Expression, right: Expression): Boolean =
-    left.dataType.isInstanceOf[Box3DUDT] || right.dataType.isInstanceOf[Box3DUDT]
+  private def isBox3DPair(left: Expression, right: Expression): Boolean =
+    left.dataType.isInstanceOf[Box3DUDT] && right.dataType.isInstanceOf[Box3DUDT]
+
+  /**
+   * Construct a `JoinQueryDetection` for a Box3D-on-Box3D `ST_Intersects` / `ST_Contains`. The
+   * R-tree pre-filter runs against the XY footprint with the supplied 2D `SpatialPredicate`; the
+   * full 3D predicate is ANDed into `extraCondition` so `TraitJoinQueryExec`'s per-pair filter
+   * enforces the Z axis after the index probe.
+   */
+  private def box3dJoinDetection(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      leftShape: Expression,
+      rightShape: Expression,
+      spatial: Expression,
+      extraCondition: Option[Expression],
+      spatialPredicate: SpatialPredicate): Option[JoinQueryDetection] =
+    Some(
+      JoinQueryDetection(
+        left,
+        right,
+        leftShape,
+        rightShape,
+        spatialPredicate,
+        isGeography = false,
+        extraCondition = Some(extraCondition.map(And(_, spatial)).getOrElse(spatial))))
 
   /**
    * Build a JoinQueryDetection for an InferredExpression predicate (ST_Contains, ST_Within, ...)
@@ -280,16 +303,38 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   SpatialPredicate.COVERS,
                   isGeography = false,
                   extraCondition))
-            // Box3D inputs short-circuit out of join planning. The join executors only handle
-            // Geometry / Geography / Box2D; treating a Box3D shape as a Geometry binary fails at
-            // runtime. Returning None drops to row-by-row evaluation where the scalar Box3D
-            // overload of ST_Intersects / ST_Contains handles the predicate correctly.
-            case ST_Intersects(Seq(leftShape, rightShape))
-                if hasBox3DInput(leftShape, rightShape) =>
-              None
-            case ST_Contains(Seq(leftShape, rightShape))
-                if hasBox3DInput(leftShape, rightShape) =>
-              None
+            // Box3D-on-Box3D variants of ST_Intersects / ST_Contains. The R-tree pass uses the
+            // XY footprint of each Box3D (materialised in TraitJoinQueryBase.shapeToGeometry),
+            // which is a coarse-grained 2D filter. The Z axis is checked per surviving candidate
+            // by folding the original predicate back into `extraCondition` — TraitJoinQueryExec
+            // applies it to every joined row after the index probe, so candidate pairs that
+            // overlap in XY but not Z are filtered out.
+            //
+            // R-tree predicate choice mirrors the Box2D arms (line 263 / 274):
+            //   - ST_Intersects → INTERSECTS (3D intersection ⟹ XY intersection).
+            //   - ST_Contains   → COVERS     (3D containment ⟹ XY covering; tighter prune than
+            //                                  INTERSECTS at no correctness cost since the Z
+            //                                  refine runs unchanged).
+            case spatial @ ST_Intersects(Seq(leftShape, rightShape))
+                if isBox3DPair(leftShape, rightShape) =>
+              box3dJoinDetection(
+                left,
+                right,
+                leftShape,
+                rightShape,
+                spatial,
+                extraCondition,
+                SpatialPredicate.INTERSECTS)
+            case spatial @ ST_Contains(Seq(leftShape, rightShape))
+                if isBox3DPair(leftShape, rightShape) =>
+              box3dJoinDetection(
+                left,
+                right,
+                leftShape,
+                rightShape,
+                spatial,
+                extraCondition,
+                SpatialPredicate.COVERS)
             // ST_Contains: when either operand is GeographyUDT we still detect the join here and
             // set `geographyShape = true`; planBroadcastJoin will route the work to the
             // Geography-aware index/refine path. Non-broadcast plans bail out in `apply` below
@@ -403,6 +448,25 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
                   rightShape,
                   SpatialPredicate.INTERSECTS,
                   isGeography = useSpheroidUnwrapped,
+                  condition,
+                  Some(distance)))
+            // ST_3DDWithin distance join. The R-tree pass expands the 2D envelope of each shape
+            // by `distance` and probes for XY-rectangle intersection, which is a valid superset
+            // filter because the XY distance between two shapes is ≤ their 3D Euclidean distance.
+            // The per-pair condition (the full original predicate) then enforces the 3D distance
+            // via `Predicates.dWithin3D` — `Distance3DOp` for the Geometry overload and
+            // the closed-form box-to-box formula for the Box3D branch. Box3D inputs land on the
+            // XY footprint courtesy of `TraitJoinQueryBase.shapeToGeometry`. ST_3DDWithin has no
+            // Geography overload, so no Geography branching here.
+            case ST_3DDWithin(Seq(leftShape, rightShape, distance)) =>
+              Some(
+                JoinQueryDetection(
+                  left,
+                  right,
+                  leftShape,
+                  rightShape,
+                  SpatialPredicate.INTERSECTS,
+                  isGeography = false,
                   condition,
                   Some(distance)))
 
@@ -945,6 +1009,8 @@ class JoinQueryDetector(sparkSession: SparkSession) extends SparkStrategy {
       (distance, spatialPredicate, isGeography, extraCondition, isRasterPredicate) match {
         case (Some(_), SpatialPredicate.INTERSECTS, false, Some(ST_DWithin(Seq(_*))), false) =>
           "ST_DWithin"
+        case (Some(_), SpatialPredicate.INTERSECTS, false, Some(ST_3DDWithin(Seq(_*))), false) =>
+          "ST_3DDWithin"
         case (Some(_), SpatialPredicate.INTERSECTS, false, _, false) => "ST_Distance <="
         case (Some(_), _, false, _, false) => "ST_Distance <"
         case (Some(_), SpatialPredicate.INTERSECTS, true, Some(ST_DWithin(Seq(_*))), false) =>

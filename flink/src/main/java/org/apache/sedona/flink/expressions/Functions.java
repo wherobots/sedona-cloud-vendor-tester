@@ -24,7 +24,10 @@ import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.annotation.InputGroup;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.common.geometryObjects.Box3D;
 import org.apache.sedona.flink.Box2DTypeSerializer;
+import org.apache.sedona.flink.Box3DTypeSerializer;
+import org.apache.sedona.flink.GeographyTypeSerializer;
 import org.apache.sedona.flink.GeometryArrayTypeSerializer;
 import org.apache.sedona.flink.GeometryTypeSerializer;
 import org.geotools.api.referencing.FactoryException;
@@ -103,6 +106,16 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.area(geom);
+    }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.area(geog);
     }
   }
 
@@ -236,6 +249,50 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.buffer(geom, radius, useSpheroid, params);
     }
+
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeographyTypeSerializer.class,
+        bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+    public org.apache.sedona.common.S2Geography.Geography eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog,
+        @DataTypeHint("Double") Double radius) {
+      return org.apache.sedona.common.geography.Functions.buffer(geog, radius);
+    }
+
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeographyTypeSerializer.class,
+        bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+    public org.apache.sedona.common.S2Geography.Geography eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog,
+        @DataTypeHint("Double") Double radius,
+        @DataTypeHint("Boolean") Boolean useSpheroid) {
+      return org.apache.sedona.common.geography.Functions.buffer(geog, radius, useSpheroid);
+    }
+
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeographyTypeSerializer.class,
+        bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+    public org.apache.sedona.common.S2Geography.Geography eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog,
+        @DataTypeHint("Double") Double radius,
+        @DataTypeHint("String") String parameters) {
+      return org.apache.sedona.common.geography.Functions.buffer(geog, radius, parameters);
+    }
   }
 
   public static class ST_BestSRID extends ScalarFunction {
@@ -357,6 +414,19 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.getCentroid(geom);
+    }
+
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeographyTypeSerializer.class,
+        bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+    public org.apache.sedona.common.S2Geography.Geography eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.centroid(geog);
     }
   }
 
@@ -502,6 +572,20 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.envelope(geom);
     }
+
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeographyTypeSerializer.class,
+        bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+    public org.apache.sedona.common.S2Geography.Geography eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog,
+        @DataTypeHint("Boolean") Boolean splitAtAntiMeridian) {
+      return org.apache.sedona.common.geography.Functions.getEnvelope(geog, splitAtAntiMeridian);
+    }
   }
 
   public static class ST_Box2D extends ScalarFunction {
@@ -514,6 +598,19 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.box2D(geom);
+    }
+  }
+
+  public static class ST_Box3D extends ScalarFunction {
+    @DataTypeHint(value = "RAW", rawSerializer = Box3DTypeSerializer.class, bridgedTo = Box3D.class)
+    public Box3D eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeometryTypeSerializer.class,
+                bridgedTo = Geometry.class)
+            Object o) {
+      Geometry geom = (Geometry) o;
+      return org.apache.sedona.common.Functions.box3D(geom);
     }
   }
 
@@ -658,6 +755,21 @@ public class Functions {
       Geometry geom2 = (Geometry) o2;
       return org.apache.sedona.common.Functions.distance(geom1, geom2);
     }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography g1,
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography g2) {
+      return org.apache.sedona.common.geography.Functions.distance(g1, g2);
+    }
   }
 
   public static class ST_DistanceSphere extends ScalarFunction {
@@ -794,6 +906,16 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.geometryType(geom);
     }
+
+    @DataTypeHint("String")
+    public String eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.geometryType(geog);
+    }
   }
 
   public static class ST_Intersection extends ScalarFunction {
@@ -828,6 +950,16 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.length(geom);
+    }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.length(geog);
     }
   }
 
@@ -969,6 +1101,16 @@ public class Functions {
             Box2D box) {
       return org.apache.sedona.common.Functions.yMin(box);
     }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.yMin(box);
+    }
   }
 
   public static class ST_YMax extends ScalarFunction {
@@ -992,6 +1134,16 @@ public class Functions {
             Box2D box) {
       return org.apache.sedona.common.Functions.yMax(box);
     }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.yMax(box);
+    }
   }
 
   public static class ST_ZMax extends ScalarFunction {
@@ -1005,6 +1157,16 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.zMax(geom);
     }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.zMax(box);
+    }
   }
 
   public static class ST_ZMin extends ScalarFunction {
@@ -1017,6 +1179,16 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.zMin(geom);
+    }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.zMin(box);
     }
   }
 
@@ -1264,6 +1436,16 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.nPoints(geom);
     }
+
+    @DataTypeHint("Integer")
+    public Integer eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.nPoints(geog);
+    }
   }
 
   public static class ST_NumGeometries extends ScalarFunction {
@@ -1276,6 +1458,16 @@ public class Functions {
             Object o) {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.numGeometries(geom);
+    }
+
+    @DataTypeHint("Integer")
+    public Integer eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.numGeometries(geog);
     }
   }
 
@@ -1332,6 +1524,16 @@ public class Functions {
       Geometry geom = (Geometry) o;
       return org.apache.sedona.common.Functions.asEWKT(geom);
     }
+
+    @DataTypeHint("String")
+    public String eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.asEWKT(geog);
+    }
   }
 
   public static class ST_AsText extends ScalarFunction {
@@ -1354,6 +1556,26 @@ public class Functions {
                 bridgedTo = Box2D.class)
             Box2D box) {
       return org.apache.sedona.common.Functions.box2dAsText(box);
+    }
+
+    @DataTypeHint("String")
+    public String eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.box3dAsText(box);
+    }
+
+    @DataTypeHint("String")
+    public String eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeographyTypeSerializer.class,
+                bridgedTo = org.apache.sedona.common.S2Geography.Geography.class)
+            org.apache.sedona.common.S2Geography.Geography geog) {
+      return org.apache.sedona.common.geography.Functions.asText(geog);
     }
   }
 
@@ -1577,6 +1799,16 @@ public class Functions {
             Box2D box) {
       return org.apache.sedona.common.Functions.xMax(box);
     }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
+      return org.apache.sedona.common.Functions.xMax(box);
+    }
   }
 
   public static class ST_XMin extends ScalarFunction {
@@ -1598,6 +1830,16 @@ public class Functions {
                 rawSerializer = Box2DTypeSerializer.class,
                 bridgedTo = Box2D.class)
             Box2D box) {
+      return org.apache.sedona.common.Functions.xMin(box);
+    }
+
+    @DataTypeHint("Double")
+    public Double eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = Box3DTypeSerializer.class,
+                bridgedTo = Box3D.class)
+            Box3D box) {
       return org.apache.sedona.common.Functions.xMin(box);
     }
   }

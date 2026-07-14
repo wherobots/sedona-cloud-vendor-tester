@@ -20,12 +20,14 @@ package org.apache.sedona.flink;
 
 import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.sedona.flink.expressions.*;
+import org.apache.sedona.flink.expressions.geography.GeographyConstructors;
 
 public class Catalog {
   public static UserDefinedFunction[] getFuncs() {
     return new UserDefinedFunction[] {
       new Aggregators.ST_Envelope_Aggr(),
       new Aggregators.ST_Extent(),
+      new Aggregators.ST_3DExtent(),
       new Aggregators.ST_Intersection_Aggr(),
       new Aggregators.ST_Union_Aggr(),
       // Aliases for *_Aggr functions with *_Agg suffix
@@ -43,6 +45,7 @@ public class Catalog {
       new Constructors.ST_LinestringFromWKB(),
       new Constructors.ST_GeomFromBox2D(),
       new Constructors.ST_MakeBox2D(),
+      new Constructors.ST_3DMakeBox(),
       new Constructors.ST_MakeEnvelope(),
       new Constructors.ST_MakePoint(),
       new Constructors.ST_MakePointM(),
@@ -64,6 +67,16 @@ public class Catalog {
       new Constructors.ST_MPolyFromText(),
       new Constructors.ST_MLineFromText(),
       new Constructors.ST_GeomCollFromText(),
+      // Geography (ST_Geog*) constructors
+      new GeographyConstructors.ST_GeogFromWKT(),
+      new GeographyConstructors.ST_GeogFromText(),
+      new GeographyConstructors.ST_GeogFromEWKT(),
+      new GeographyConstructors.ST_GeogCollFromText(),
+      new GeographyConstructors.ST_GeogFromWKB(),
+      new GeographyConstructors.ST_GeogFromEWKB(),
+      new GeographyConstructors.ST_GeogFromGeoHash(),
+      new GeographyConstructors.ST_GeogToGeometry(),
+      new GeographyConstructors.ST_GeomToGeography(),
       new Functions.GeometryType(),
       new Functions.ST_Area(),
       new Functions.ST_AreaSpheroid(),
@@ -82,6 +95,7 @@ public class Catalog {
       new Functions.ST_CrossesDateLine(),
       new Functions.ST_Expand(),
       new Functions.ST_Box2D(),
+      new Functions.ST_Box3D(),
       new Functions.ST_Envelope(),
       new Functions.ST_OrientedEnvelope(),
       new Functions.ST_Difference(),
@@ -260,7 +274,8 @@ public class Catalog {
       new Predicates.ST_Touches(),
       new Predicates.ST_Relate(),
       new Predicates.ST_RelateMatch(),
-      new Predicates.ST_DWithin()
+      new Predicates.ST_DWithin(),
+      new Predicates.ST_3DDWithin()
     };
   }
 }

@@ -31,6 +31,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.types.Row;
 import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.common.geometryObjects.Box3D;
 import org.apache.sedona.flink.expressions.Functions;
 import org.apache.sedona.flink.expressions.FunctionsProj4;
 import org.datasyslab.proj4sedona.core.Proj;
@@ -461,6 +462,36 @@ public class FunctionTest extends TestBase {
   }
 
   @Test
+  public void testBox3D() {
+    Table t =
+        tableEnv.sqlQuery(
+            "SELECT ST_Box3D(ST_GeomFromText('LINESTRING Z(0 0 -3, 5 10 7)')) AS bbox");
+    Box3D bbox = (Box3D) first(t).getField(0);
+    assertEquals(0.0, bbox.getXMin(), 0.0);
+    assertEquals(0.0, bbox.getYMin(), 0.0);
+    assertEquals(-3.0, bbox.getZMin(), 0.0);
+    assertEquals(5.0, bbox.getXMax(), 0.0);
+    assertEquals(10.0, bbox.getYMax(), 0.0);
+    assertEquals(7.0, bbox.getZMax(), 0.0);
+
+    // XY-only geometry folds Z to 0 per PostGIS.
+    Table tXY =
+        tableEnv.sqlQuery("SELECT ST_Box3D(ST_GeomFromText('LINESTRING(0 0, 5 10)')) AS bbox");
+    Box3D xy = (Box3D) first(tXY).getField(0);
+    assertEquals(0.0, xy.getZMin(), 0.0);
+    assertEquals(0.0, xy.getZMax(), 0.0);
+
+    // null and empty inputs propagate to NULL.
+    Table tNull =
+        tableEnv.sqlQuery(
+            "SELECT ST_Box3D(ST_GeomFromText('LINESTRING EMPTY')) AS empty_bbox,"
+                + " ST_Box3D(ST_GeomFromText(CAST(NULL AS STRING))) AS null_bbox");
+    Row row = first(tNull);
+    assertNull(row.getField(0));
+    assertNull(row.getField(1));
+  }
+
+  @Test
   public void testBox2DAsTextAndAccessors() {
     Table t =
         tableEnv.sqlQuery(
@@ -473,6 +504,24 @@ public class FunctionTest extends TestBase {
     assertEquals(2.0, row.getField(2));
     assertEquals(4.0, row.getField(3));
     assertEquals(5.0, row.getField(4));
+  }
+
+  @Test
+  public void testBox3DAsTextAndAccessors() {
+    Table t =
+        tableEnv.sqlQuery(
+            "WITH bx AS ("
+                + " SELECT ST_Box3D(ST_GeomFromText('LINESTRING Z(0 0 -3, 5 10 7)')) AS b)"
+                + " SELECT ST_AsText(b), ST_XMin(b), ST_YMin(b), ST_ZMin(b),"
+                + " ST_XMax(b), ST_YMax(b), ST_ZMax(b) FROM bx");
+    Row row = first(t);
+    assertEquals("BOX3D(0.0 0.0 -3.0, 5.0 10.0 7.0)", row.getField(0));
+    assertEquals(0.0, row.getField(1));
+    assertEquals(0.0, row.getField(2));
+    assertEquals(-3.0, row.getField(3));
+    assertEquals(5.0, row.getField(4));
+    assertEquals(10.0, row.getField(5));
+    assertEquals(7.0, row.getField(6));
   }
 
   @Test
