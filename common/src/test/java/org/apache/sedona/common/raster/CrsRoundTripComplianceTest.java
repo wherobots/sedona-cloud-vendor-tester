@@ -462,7 +462,7 @@ public class CrsRoundTripComplianceTest extends RasterTestBase {
   }
 
   // ---------------------------------------------------------------------------
-  // Export failures — projection types not supported by proj4sedona
+  // Additional projection coverage
   // ---------------------------------------------------------------------------
 
   @Test
@@ -475,14 +475,17 @@ public class CrsRoundTripComplianceTest extends RasterTestBase {
     assertTrue("WKT1 should contain PROJCS", wkt1.contains("PROJCS"));
   }
 
+  // proj4sedona 0.1.0 added Krovak variants and Hotine Oblique Mercator PROJ-string
+  // serialization; these CRSs now export and round-trip, so the former
+  // "export must fail" assertions have become positive round-trip checks.
   @Test
-  public void testExportFails_Krovak_2065() throws FactoryException {
-    assertExportFails(2065);
+  public void testProjRoundTrip_Krovak_2065() throws FactoryException {
+    assertProjRoundTrip(2065);
   }
 
   @Test
-  public void testExportFails_HotineObliqueMercator_2056() throws FactoryException {
-    assertExportFails(2056);
+  public void testProjRoundTrip_HotineObliqueMercator_2056() throws FactoryException {
+    assertProjRoundTrip(2056);
   }
 
   // ---------------------------------------------------------------------------
@@ -598,25 +601,6 @@ public class CrsRoundTripComplianceTest extends RasterTestBase {
     assertTrue(
         "Error message should mention CRS parsing",
         thrown.getMessage().contains("Cannot parse CRS string"));
-  }
-
-  /**
-   * Assert that RS_CRS export fails for projection types not supported by proj4sedona. Tests both
-   * "proj" and "projjson" formats.
-   */
-  private void assertExportFails(int epsg) throws FactoryException {
-    GridCoverage2D baseRaster = RasterConstructors.makeEmptyRaster(1, 4, 4, 0, 0, 1);
-    GridCoverage2D raster1 = RasterEditors.setCrs(baseRaster, "EPSG:" + epsg);
-
-    assertThrows(
-        "EPSG:" + epsg + " export to PROJ should fail",
-        Exception.class,
-        () -> RasterAccessors.crs(raster1, "proj"));
-
-    assertThrows(
-        "EPSG:" + epsg + " export to PROJJSON should fail",
-        Exception.class,
-        () -> RasterAccessors.crs(raster1, "projjson"));
   }
 
   /**

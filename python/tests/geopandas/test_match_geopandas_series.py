@@ -85,6 +85,7 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
 
         self.polygons = [
             Polygon(),
+            # Keep an invalid polygon to exercise invalid-geometry paths.
             Polygon([(0, 0), (1, 0), (2, 1), (3, 1)]),
             Polygon([(1, 1), (2, 1), (2, 2), (1, 2)]),
         ]
@@ -401,8 +402,61 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             gpd_result = gpd.GeoSeries(data).fillna(fill_val)
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
-    def test_explode(self):
-        pass
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"index_parts": True},
+            {"ignore_index": True},
+            {"ignore_index": True, "index_parts": True},
+        ],
+    )
+    def test_explode(self, kwargs):
+        from geopandas.testing import assert_geoseries_equal
+
+        family_names = [
+            "point",
+            "line",
+            "polygon",
+            "multipoint",
+            "multiline",
+            "multipolygon",
+            "collection",
+        ]
+        families = [
+            self.points,
+            self.linestrings,
+            self.polygons,
+            self.multipoints,
+            self.multilinestrings,
+            self.multipolygons,
+            self.geomcollection,
+        ]
+        geometries = []
+        index_values = []
+        for family_name, family in zip(family_names, families):
+            geometries.extend(family)
+            index_values.extend(
+                (family_name, row_number) for row_number in range(len(family))
+            )
+
+        index = pd.MultiIndex.from_tuples(index_values, names=["family", "row_number"])
+        expected = gpd.GeoSeries(geometries, index=index, name="geometry").explode(
+            **kwargs
+        )
+        result = GeoSeries(geometries, index=index, name="geometry").explode(**kwargs)
+        actual = result.to_geopandas()
+
+        # The fixture intentionally includes an invalid polygon. Coordinate-wise
+        # equality is reliable here while topological equality is not.
+        assert_geoseries_equal(
+            actual,
+            expected,
+            check_index_type=False,
+            check_geom_type=True,
+            check_less_precise=True,
+        )
+        pd.testing.assert_index_equal(actual.index, expected.index, exact=False)
 
     def test_to_crs(self):
         for geom in self.geoms:
@@ -518,6 +572,11 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             gpd_result = gpd.GeoSeries(geom).geom_type
             self.check_pd_series_equal(sgpd_result, gpd_result)
 
+        geometries_with_null = [Point(0, 0), None]
+        sgpd_result = GeoSeries(geometries_with_null).geom_type
+        gpd_result = gpd.GeoSeries(geometries_with_null).geom_type
+        self.check_pd_series_equal(sgpd_result, gpd_result)
+
     def test_type(self):
         for geom in self.geoms:
             # Sedona converts LinearRing to LineString
@@ -580,6 +639,16 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             sgpd_result = GeoSeries(geom).count_coordinates()
             gpd_result = gpd.GeoSeries(geom).count_coordinates()
             self.check_pd_series_equal(sgpd_result, gpd_result)
+
+    @pytest.mark.skipif(
+        parse_version(gpd.__version__) < parse_version("0.13.0"),
+        reason="geopandas get_coordinates requires version 0.13.0 or higher",
+    )
+    def test_get_coordinates(self):
+        for geometries in self.geoms:
+            sgpd_result = GeoSeries(geometries).get_coordinates()
+            gpd_result = gpd.GeoSeries(geometries).get_coordinates()
+            pd.testing.assert_frame_equal(sgpd_result.to_pandas(), gpd_result)
 
     def test_count_geometries(self):
         for geom in self.geoms:
@@ -699,7 +768,26 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             self.check_pd_series_equal(sgpd_result, gpd_result)
 
     def test_is_ccw(self):
-        pass
+        data = [
+            LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]),
+            LineString([(0, 0), (0, 1), (1, 1), (1, 0), (0, 0)]),
+            LineString([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            LineString([(0, 1), (0, -1), (-1, -2), (3, -2)]),
+            LineString([(0, 0), (1, 0), (0, 1)]),
+            LineString([(0, 0), (1, 0), (0, 0)]),
+            LinearRing([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            Polygon([(0, 0), (1, 0), (0, 1), (0, 0)]),
+            Point(0, 0),
+            MultiLineString([[(0, 0), (1, 0)], [(1, 0), (1, 1)]]),
+            LineString(),
+            Polygon(),
+            None,
+        ]
+        index = pd.Index(range(10, 23), name="feature_id")
+
+        sgpd_result = GeoSeries(data, index=index).is_ccw
+        gpd_result = gpd.GeoSeries(data, index=index).is_ccw
+        self.check_pd_series_equal(sgpd_result, gpd_result)
 
     def test_is_closed(self):
         if parse_version(gpd.__version__) < parse_version("1.0.0"):
@@ -719,6 +807,42 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             sgpd_result = GeoSeries(geom).has_z
             gpd_result = gpd.GeoSeries(geom).has_z
             self.check_pd_series_equal(sgpd_result, gpd_result)
+
+        # Shapely 2.1 added mixed-dimension GeometryCollection support to has_z.
+        if parse_version(shapely.__version__) >= parse_version("2.1.0"):
+            wkts = [
+                "GEOMETRYCOLLECTION (POINT (0 0), POINT Z (1 1 2))",
+                (
+                    "GEOMETRYCOLLECTION (POINT (0 0), "
+                    "GEOMETRYCOLLECTION (POINT Z (1 1 2)))"
+                ),
+                "POINT EMPTY",
+                None,
+            ]
+            sgpd_result = GeoSeries.from_wkt(wkts).has_z
+            gpd_result = gpd.GeoSeries.from_wkt(wkts).has_z
+            self.check_pd_series_equal(sgpd_result, gpd_result)
+
+    def test_has_m(self):
+        if parse_version(gpd.__version__) < parse_version("1.1.0"):
+            pytest.skip("geopandas has_m requires version 1.1.0 or higher")
+        if parse_version(shapely.__version__) < parse_version("2.1.0"):
+            pytest.skip("geopandas has_m requires shapely 2.1.0 or higher")
+        if shapely.geos_version < (3, 12, 0):
+            pytest.skip("has_m requires GEOS 3.12.0 or higher")
+
+        wkts = [
+            "POINT (0 1)",
+            "POINT Z (0 1 2)",
+            "POINT M (0 1 2)",
+            "POINT ZM (0 1 2 3)",
+            "GEOMETRYCOLLECTION (POINT (0 0), POINT M (1 1 2))",
+            "POINT EMPTY",
+            None,
+        ]
+        sgpd_result = GeoSeries.from_wkt(wkts).has_m
+        gpd_result = gpd.GeoSeries.from_wkt(wkts).has_m
+        self.check_pd_series_equal(sgpd_result, gpd_result)
 
     def test_get_precision(self):
         pass
@@ -758,11 +882,50 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             gpd_result = gpd.GeoSeries(geom).centroid
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
+    @pytest.mark.skipif(
+        parse_version(gpd.__version__) < parse_version("0.14.0"),
+        reason="geopandas concave_hull requires version 0.14.0 or higher",
+    )
     def test_concave_hull(self):
-        for geom in self.geoms:
-            sgpd_result = GeoSeries(geom).concave_hull(ratio=0.5)
-            gpd_result = gpd.GeoSeries(geom).concave_hull(ratio=0.5)
-            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+        # Cover the valid ratio range without tripling this already broad set
+        # of geometry-type fixtures.
+        ratio_groups = (
+            (0.0, self.geoms[:3]),
+            (0.5, self.geoms[3:6]),
+            (1.0, self.geoms[6:]),
+        )
+        for ratio, geometry_groups in ratio_groups:
+            for geometries in geometry_groups:
+                sgpd_result = GeoSeries(geometries).concave_hull(ratio=ratio)
+                gpd_result = gpd.GeoSeries(geometries).concave_hull(ratio=ratio)
+                self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+        # Avoid symmetric fixtures here: equal-priority Delaunay triangles can
+        # be resolved differently by JTS and GEOS while producing valid hulls.
+        points_around_hole = MultiPoint(
+            [
+                (11.1, 0.1),
+                (6.2, 8.1),
+                (0.1, 10.3),
+                (-8.2, 7.1),
+                (-10.1, -0.2),
+                (-7.2, -8.3),
+                (0.2, -11.1),
+                (7.3, -7.2),
+                (5.1, 0.2),
+                (-0.1, 5.2),
+                (-4.2, -0.9),
+                (0.1, -4.1),
+            ]
+        )
+        sgpd_result = GeoSeries([points_around_hole]).concave_hull(
+            ratio=0.9, allow_holes=True
+        )
+        gpd_result = gpd.GeoSeries([points_around_hole]).concave_hull(
+            ratio=0.9, allow_holes=True
+        )
+        assert len(gpd_result.iloc[0].interiors) == 1
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_convex_hull(self):
         for geom in self.geoms:
@@ -782,6 +945,39 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
         for geom in self.geoms:
             result = GeoSeries(geom).delaunay_triangles()
             assert len(result) == len(geom)
+
+    def test_constrained_delaunay_triangles(self):
+        if parse_version(gpd.__version__) < parse_version("1.1.0"):
+            pytest.skip(
+                "geopandas constrained_delaunay_triangles requires version 1.1.0 or higher"
+            )
+        if parse_version(shapely.__version__) < parse_version("2.1.0"):
+            pytest.skip(
+                "geopandas constrained_delaunay_triangles requires shapely 2.1.0 or higher"
+            )
+        if shapely.geos_version < (3, 10, 0):
+            pytest.skip("constrained_delaunay_triangles requires GEOS 3.10.0 or higher")
+
+        geoms = [
+            Polygon([(0, 0), (2, 0), (0, 2), (0, 0)]),
+            Polygon(
+                [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)],
+                [[(1, 1), (3, 1), (3, 3), (1, 3), (1, 1)]],
+            ),
+            MultiPolygon(
+                [
+                    Polygon([(0, 0), (1, 0), (0, 1), (0, 0)]),
+                    Polygon([(3, 0), (4, 0), (3, 1), (3, 0)]),
+                ]
+            ),
+            GeometryCollection([Polygon([(0, 0), (1, 0), (0, 1), (0, 0)])]),
+            Point(0, 0),
+            Polygon(),
+            None,
+        ]
+        sgpd_result = GeoSeries(geoms).constrained_delaunay_triangles()
+        gpd_result = gpd.GeoSeries(geoms).constrained_delaunay_triangles()
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_voronoi_polygons(self):
         # Sedona ST_VoronoiPolygons is element-wise, while geopandas operates on
@@ -849,7 +1045,68 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
     def test_interiors(self):
-        pass
+        polygon_with_holes = Polygon(
+            [(0, 0), (0, 5), (5, 5), (5, 0), (0, 0)],
+            [
+                [(1, 1), (2, 1), (1, 2), (1, 1)],
+                [(3, 3), (4, 3), (4, 4), (3, 3)],
+            ],
+        )
+        polygon_without_holes = Polygon([(10, 10), (10, 12), (12, 10), (10, 10)])
+        data = [
+            polygon_with_holes,
+            polygon_without_holes,
+            Polygon(),
+            Point(0, 0),
+            Point(),
+            LineString(),
+            MultiPolygon([polygon_without_holes]),
+            GeometryCollection([polygon_with_holes]),
+            None,
+        ]
+        index = pd.MultiIndex.from_tuples(
+            [
+                ("polygon", "holes"),
+                ("polygon", "no-holes"),
+                ("polygon", "empty"),
+                ("point", "value"),
+                ("point", "empty"),
+                ("line", "empty"),
+                ("multipolygon", "value"),
+                ("collection", "value"),
+                ("null", "value"),
+            ],
+            names=["geometry_type", "case"],
+        )
+
+        sgpd_result = GeoSeries(data, index=index).interiors.to_pandas()
+        gpd_result = gpd.GeoSeries(data, index=index).interiors
+
+        def normalized(series):
+            return pd.Series(
+                [
+                    (
+                        None
+                        if rings is None
+                        else [
+                            tuple(tuple(coordinate) for coordinate in ring.coords)
+                            for ring in rings
+                        ]
+                    )
+                    for rings in series
+                ],
+                index=series.index,
+                name=series.name,
+                dtype=object,
+            )
+
+        # Sedona serializes rings as LineStrings, while GeoPandas exposes
+        # LinearRings. Coordinate sequences and object-Series null/list
+        # semantics must still match.
+        pd.testing.assert_series_equal(
+            normalized(sgpd_result),
+            normalized(gpd_result),
+        )
 
     def test_remove_repeated_points(self):
         for geom in self.geoms:
@@ -884,11 +1141,107 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             gpd_result = gpd.GeoSeries(geom).minimum_clearance()
             self.check_pd_series_equal(sgpd_result, gpd_result)
 
+    def test_minimum_clearance_line(self):
+        if parse_version(gpd.__version__) < parse_version("1.1.0"):
+            pytest.skip(
+                "geopandas minimum_clearance_line requires version 1.1.0 or higher"
+            )
+        if parse_version(shapely.__version__) < parse_version("2.1.0"):
+            pytest.skip(
+                "geopandas minimum_clearance_line requires shapely 2.1.0 or higher"
+            )
+
+        geoms = [
+            Point(0, 0),
+            LineString([(0, 0), (1, 1), (3, 2)]),
+            MultiPoint([(0, 0), (3, 4)]),
+            MultiPoint([(1, 1), (1, 1)]),
+            Polygon([(0, 0), (1, 1), (0, 1), (0, 0)]),
+            GeometryCollection([Polygon([(0, 0), (1, 0), (0, 1), (0, 0)])]),
+            Point(),
+            LineString(),
+            Polygon(),
+            None,
+        ]
+        sgpd_result = GeoSeries(geoms).minimum_clearance_line()
+        gpd_result = gpd.GeoSeries(geoms).minimum_clearance_line()
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
     def test_normalize(self):
         for geom in self.geoms:
             sgpd_result = GeoSeries(geom).normalize()
             gpd_result = gpd.GeoSeries(geom).normalize()
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_orient_polygons(self):
+        if parse_version(gpd.__version__) < parse_version("1.1.0"):
+            pytest.skip("geopandas orient_polygons requires version 1.1.0 or higher")
+        if parse_version(shapely.__version__) < parse_version("2.1.0"):
+            pytest.skip("geopandas orient_polygons requires shapely 2.1.0 or higher")
+
+        clockwise_polygon = Polygon(
+            [(0, 0), (0, 5), (5, 5), (5, 0), (0, 0)],
+            [[(1, 1), (4, 1), (4, 4), (1, 4), (1, 1)]],
+        )
+        second_polygon = Polygon([(10, 0), (10, 2), (12, 2), (12, 0), (10, 0)])
+        nested_collection = GeometryCollection(
+            [
+                Point(20, 20),
+                GeometryCollection(
+                    [
+                        clockwise_polygon,
+                        MultiPolygon([second_polygon]),
+                    ]
+                ),
+            ]
+        )
+        geoms = [
+            clockwise_polygon,
+            MultiPolygon([clockwise_polygon, second_polygon]),
+            nested_collection,
+            Point(1, 1),
+            LineString([(0, 0), (1, 1)]),
+            Point(),
+            LineString(),
+            Polygon(),
+            MultiPolygon(),
+            GeometryCollection(),
+            None,
+        ]
+        index = pd.Index(range(100, 111), name="feature_id")
+
+        def orientation_signature(geometry):
+            if geometry is None:
+                return None
+            if isinstance(geometry, Polygon):
+                if geometry.is_empty:
+                    return ("Polygon", "empty")
+                return (
+                    "Polygon",
+                    bool(geometry.exterior.is_ccw),
+                    tuple(bool(ring.is_ccw) for ring in geometry.interiors),
+                )
+            if isinstance(geometry, (MultiPolygon, GeometryCollection)):
+                return (
+                    geometry.geom_type,
+                    tuple(orientation_signature(part) for part in geometry.geoms),
+                )
+            return (geometry.geom_type, bool(geometry.is_empty))
+
+        for exterior_cw in (False, True):
+            sgpd_result = GeoSeries(geoms, index=index).orient_polygons(
+                exterior_cw=exterior_cw
+            )
+            gpd_result = gpd.GeoSeries(geoms, index=index).orient_polygons(
+                exterior_cw=exterior_cw
+            )
+
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+            actual = sgpd_result.to_geopandas().sort_index()
+            expected = gpd_result.sort_index()
+            assert [orientation_signature(geometry) for geometry in actual] == [
+                orientation_signature(geometry) for geometry in expected
+            ]
 
     def test_make_valid(self):
         import shapely
@@ -953,6 +1306,60 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
         gpd_result = gpd.GeoSeries(geoms).segmentize(psser.to_pandas())
         self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
+    @pytest.mark.parametrize(
+        "matrix",
+        [
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            (1, 0, 0, 1, 3, -2),
+            (2.0, 0.0, 0.0, 0.5, 0.0, 0.0),
+            (0.0, -1.0, 1.0, 0.0, 0.0, 0.0),
+            (1.0, 0.5, -0.25, 1.0, 0.0, 0.0),
+        ],
+        ids=["identity", "translation", "scale", "rotation", "shear"],
+    )
+    def test_affine_transform_2d(self, matrix):
+        geoms = [
+            self.points[2],
+            self.linestrings[2],
+            self.polygons[2],
+            self.multipoints[2],
+            self.multilinestrings[2],
+            self.multipolygons[1],
+            self.geomcollection[1],
+        ]
+
+        sgpd_result = GeoSeries(geoms).affine_transform(matrix)
+        gpd_result = gpd.GeoSeries(geoms).affine_transform(matrix)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_affine_transform_3d(self):
+        geoms = [
+            Point(1, 2, 3),
+            LineString([(0, 0, 1), (2, 1, 4)]),
+            Polygon([(0, 0, 1), (2, 0, 2), (1, 1, 3), (0, 0, 1)]),
+            MultiPoint([(0, 0, 1), (1, 2, 3)]),
+        ]
+        matrix = [
+            1.0,
+            0.5,
+            0.25,
+            -0.5,
+            2.0,
+            0.75,
+            0.1,
+            -0.2,
+            1.5,
+            3.0,
+            -4.0,
+            5.0,
+        ]
+
+        sgpd_result = GeoSeries(geoms).affine_transform(matrix)
+        gpd_result = gpd.GeoSeries(geoms).affine_transform(matrix)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
     def test_transform(self):
         pass
 
@@ -977,6 +1384,188 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             sgpd_result = GeoSeries(non_empty).rotate(angle, **origin_kwargs)
             gpd_result = gpd.GeoSeries(non_empty).rotate(angle, **origin_kwargs)
             self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    @pytest.mark.parametrize(
+        "xfact,yfact",
+        [
+            (2.0, 0.5),
+            (-1.5, -0.5),
+            (0.0, 1.0),
+        ],
+        ids=["positive", "negative", "zero"],
+    )
+    @pytest.mark.parametrize(
+        "origin",
+        ["center", "centroid", (2.0, -1.0)],
+        ids=["center", "centroid", "explicit"],
+    )
+    def test_scale_2d(self, xfact, yfact, origin):
+        geoms = [
+            self.points[2],
+            self.linestrings[2],
+            self.polygons[2],
+            self.multipoints[2],
+            self.multilinestrings[2],
+            self.multipolygons[1],
+            self.geomcollection[1],
+        ]
+
+        sgpd_result = GeoSeries(geoms).scale(xfact=xfact, yfact=yfact, origin=origin)
+        gpd_result = gpd.GeoSeries(geoms).scale(xfact=xfact, yfact=yfact, origin=origin)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_scale_3d(self):
+        polygon = Polygon([(0, 0, 1), (2, 0, 2), (1, 2, 4), (0, 0, 1)])
+        geoms = [
+            Point(1, 2, 3),
+            LineString([(0, 0, 1), (2, 1, 4)]),
+            polygon,
+            MultiPoint([(0, 0, 1), (1, 2, 3)]),
+            MultiLineString([[(0, 0, 1), (2, 1, 3)], [(1, -1, 2), (3, 2, 4)]]),
+            MultiPolygon([polygon]),
+            GeometryCollection(
+                [Point(1, 2, 3), LineString([(0, 0, 1), (2, 1, 4)]), polygon]
+            ),
+        ]
+        scale_kwargs = {
+            "xfact": 2.0,
+            "yfact": -1.0,
+            "zfact": 0.0,
+            "origin": (1.0, -2.0, 3.0),
+        }
+
+        sgpd_result = GeoSeries(geoms).scale(**scale_kwargs)
+        gpd_result = gpd.GeoSeries(geoms).scale(**scale_kwargs)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    @pytest.mark.parametrize(
+        "xs,ys",
+        [
+            (35.0, 0.0),
+            (0.0, -25.0),
+            (-15.0, 30.0),
+        ],
+        ids=["x-only-positive", "y-only-negative", "unequal-both"],
+    )
+    @pytest.mark.parametrize(
+        "origin",
+        ["center", "centroid", (2.5, -1.5)],
+        ids=["center", "centroid", "explicit"],
+    )
+    def test_skew_2d(self, xs, ys, origin):
+        geoms = [
+            self.points[2],
+            self.linestrings[2],
+            self.t1,
+            self.multipoints[2],
+            self.multilinestrings[2],
+            self.multipolygons[1],
+            self.geomcollection[1],
+        ]
+
+        sgpd_result = GeoSeries(geoms).skew(xs=xs, ys=ys, origin=origin)
+        gpd_result = gpd.GeoSeries(geoms).skew(xs=xs, ys=ys, origin=origin)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_skew_radians(self):
+        geoms = [
+            self.points[2],
+            self.linestrings[2],
+            self.t1,
+            self.multipoints[2],
+            self.multilinestrings[2],
+            self.multipolygons[1],
+            self.geomcollection[1],
+        ]
+        skew_kwargs = {
+            "xs": np.pi / 7,
+            "ys": -np.pi / 9,
+            "origin": (1.25, -2.5),
+            "use_radians": True,
+        }
+
+        sgpd_result = GeoSeries(geoms).skew(**skew_kwargs)
+        gpd_result = gpd.GeoSeries(geoms).skew(**skew_kwargs)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_skew_3d_preserves_z(self):
+        polygon = Polygon([(0, 0, 1), (3, 0, 2), (1, 2, 4), (0, 0, 1)])
+        geoms = [
+            Point(1, 2, 3),
+            LineString([(0, 0, 1), (2, 1, 4)]),
+            polygon,
+            MultiPoint([(0, 0, 1), (1, 2, 3)]),
+            MultiLineString([[(0, 0, 1), (2, 1, 3)], [(1, -1, 2), (3, 2, 4)]]),
+            MultiPolygon([polygon]),
+            GeometryCollection(
+                [Point(1, 2, 3), LineString([(0, 0, 1), (2, 1, 4)]), polygon]
+            ),
+        ]
+        skew_kwargs = {
+            "xs": 25.0,
+            "ys": -10.0,
+            "origin": (1.0, -2.0, 7.0),
+        }
+
+        sgpd_result = GeoSeries(geoms).skew(**skew_kwargs)
+        gpd_result = gpd.GeoSeries(geoms).skew(**skew_kwargs)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+        actual_z = shapely.get_coordinates(
+            sgpd_result.to_geopandas().array, include_z=True
+        )[:, 2]
+        expected_z = shapely.get_coordinates(geoms, include_z=True)[:, 2]
+        np.testing.assert_array_equal(actual_z, expected_z)
+
+    @pytest.mark.parametrize(
+        "xoff,yoff,zoff",
+        [
+            (2, 3, 0),
+            (0, 0, 0),
+            (1.5, -2, 0),
+            (0, 0, 5),
+        ],
+        ids=["positive", "identity", "mixed", "z-only"],
+    )
+    def test_translate_2d(self, xoff, yoff, zoff):
+        for geom in self.geoms:
+            # Filter empty geometries within each group
+            non_empty = [g for g in geom if g is not None and not g.is_empty]
+            if not non_empty:
+                continue
+
+            sgpd_result = GeoSeries(non_empty).translate(xoff, yoff, zoff)
+            gpd_result = gpd.GeoSeries(non_empty).translate(xoff, yoff, zoff)
+            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+
+    def test_translate_3d(self):
+        polygon = Polygon([(0, 0, 1), (3, 0, 2), (1, 2, 4), (0, 0, 1)])
+        geoms = [
+            Point(1, 2, 3),
+            LineString([(0, 0, 1), (2, 1, 4)]),
+            polygon,
+            MultiPoint([(0, 0, 1), (1, 2, 3)]),
+            MultiLineString([[(0, 0, 1), (2, 1, 3)], [(1, -1, 2), (3, 2, 4)]]),
+            MultiPolygon([polygon]),
+            GeometryCollection(
+                [Point(1, 2, 3), LineString([(0, 0, 1), (2, 1, 4)]), polygon]
+            ),
+        ]
+        translate_kwargs = {"xoff": -2.5, "yoff": 3.25, "zoff": 5.0}
+
+        sgpd_result = GeoSeries(geoms).translate(**translate_kwargs)
+        gpd_result = gpd.GeoSeries(geoms).translate(**translate_kwargs)
+
+        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+        actual_z = shapely.get_coordinates(
+            sgpd_result.to_geopandas().sort_index().array, include_z=True
+        )[:, 2]
+        source_z = shapely.get_coordinates(geoms, include_z=True)[:, 2]
+        np.testing.assert_allclose(actual_z, source_z + translate_kwargs["zoff"])
 
     def test_force_2d(self):
         # force_2d was added from geopandas 1.0.0
@@ -1470,6 +2059,19 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
                     gpd.GeoSeries(geom2), align=False
                 )
                 self.check_pd_series_equal(sgpd_result, gpd_result)
+
+    @pytest.mark.parametrize("tolerance", [0.0, 0.25])
+    def test_geom_equals_exact(self, tolerance):
+        geometries = [
+            geometry for geometry_family in self.geoms for geometry in geometry_family
+        ]
+        sgpd_result = GeoSeries(geometries).geom_equals_exact(
+            GeoSeries(geometries), tolerance=tolerance, align=False
+        )
+        gpd_result = gpd.GeoSeries(geometries).geom_equals_exact(
+            gpd.GeoSeries(geometries), tolerance=tolerance, align=False
+        )
+        self.check_pd_series_equal(sgpd_result, gpd_result)
 
     def test_interpolate(self):
         for geom in [self.linestrings, self.linearrings]:
