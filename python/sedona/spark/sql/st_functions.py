@@ -1117,13 +1117,16 @@ def ST_InteriorRingN(polygon: ColumnOrName, n: Union[ColumnOrName, int]) -> Colu
 
 @validate_argument_types
 def ST_Intersection(a: ColumnOrName, b: ColumnOrName) -> Column:
-    """Calculate the intersection of two geometry columns.
+    """Calculate the intersection of two Geometry columns or two Geography columns.
 
-    :param a: One geometry column to use in the calculation.
+    Inputs must have the same spatial type. Geography intersections use geodesic edges and
+    return a Geography.
+
+    :param a: One Geometry or Geography column to use in the calculation.
     :type a: ColumnOrName
-    :param b: Other geometry column to use in the calculation.
+    :param b: Other Geometry or Geography column to use in the calculation.
     :type b: ColumnOrName
-    :return: Intersection of a and b as a geometry column.
+    :return: Intersection of a and b with the same spatial type as the inputs.
     :rtype: Column
     """
     return _call_st_function("ST_Intersection", (a, b))
@@ -1171,12 +1174,12 @@ def ST_IsEmpty(geometry: ColumnOrName) -> Column:
 
 @validate_argument_types
 def ST_IsPolygonCW(geometry: ColumnOrName) -> Column:
-    """Check if the Polygon or MultiPolygon use a clockwise orientation for exterior ring and counter-clockwise
-    orientation for interior ring.
+    """Check whether polygon rings use clockwise exterior orientation.
 
     :param geometry: Geometry column to check.
     :type geometry: ColumnOrName
-    :return: True if the geometry is empty and False otherwise as a boolean column.
+    :return: True if every exterior ring is clockwise and every interior ring
+        is counter-clockwise. Empty Polygon and MultiPolygon values return True.
     :rtype: Column
     """
     return _call_st_function("ST_IsPolygonCW", geometry)
@@ -1660,15 +1663,22 @@ def ST_MakeValid(
 
 
 @validate_argument_types
-def ST_MaximumInscribedCircle(geometry: ColumnOrName) -> Column:
+def ST_MaximumInscribedCircle(
+    geometry: ColumnOrName,
+    tolerance: Optional[ColumnOrNameOrNumber] = None,
+) -> Column:
     """Finds the largest circle that is contained within a geometry, or which does not overlap any lines and points
 
-    :param geometry:
+    :param geometry: Input geometry column.
     :type geometry: ColumnOrName
+    :param tolerance: Optional search tolerance. Zero uses the per-geometry
+        default of ``max(width, height) / 1000``.
+    :type tolerance: Optional[ColumnOrNameOrNumber]
     :return: Row of center point, nearest point and radius
     :rtype: Column
     """
-    return _call_st_function("ST_MaximumInscribedCircle", geometry)
+    args = (geometry,) if tolerance is None else (geometry, tolerance)
+    return _call_st_function("ST_MaximumInscribedCircle", args)
 
 
 @validate_argument_types
@@ -2024,11 +2034,12 @@ def ST_Snap(
 
 @validate_argument_types
 def ST_IsPolygonCCW(geometry: ColumnOrName) -> Column:
-    """Check if the Polygon or MultiPolygon use a counter-clockwise orientation for exterior ring and clockwise
-    orientation for interior ring.
+    """Check whether polygon rings use counter-clockwise exterior orientation.
+
     :param geometry: Geometry column to check.
     :type geometry: ColumnOrName
-    :return: True if the geometry is empty and False otherwise as a boolean column.
+    :return: True if every exterior ring is counter-clockwise and every interior
+        ring is clockwise. Empty Polygon and MultiPolygon values return True.
     :rtype: Column
     """
     return _call_st_function("ST_IsPolygonCCW", geometry)
