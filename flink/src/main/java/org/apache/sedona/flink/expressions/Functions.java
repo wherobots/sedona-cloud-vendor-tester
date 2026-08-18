@@ -36,6 +36,7 @@ import org.apache.flink.table.types.inference.TypeStrategy;
 import org.apache.sedona.common.S2Geography.Geography;
 import org.apache.sedona.common.geometryObjects.Box2D;
 import org.apache.sedona.common.geometryObjects.Box3D;
+import org.apache.sedona.common.utils.HilbertDistance;
 import org.apache.sedona.flink.Box2DTypeSerializer;
 import org.apache.sedona.flink.Box3DTypeSerializer;
 import org.apache.sedona.flink.GeographyTypeSerializer;
@@ -2901,6 +2902,32 @@ public class Functions {
     }
   }
 
+  public static class ST_HilbertDistance extends ScalarFunction {
+    @DataTypeHint("BIGINT")
+    public Long eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeometryTypeSerializer.class,
+                bridgedTo = Geometry.class)
+            Object o,
+        @DataTypeHint("DOUBLE") Double xmin,
+        @DataTypeHint("DOUBLE") Double ymin,
+        @DataTypeHint("DOUBLE") Double xmax,
+        @DataTypeHint("DOUBLE") Double ymax,
+        @DataTypeHint("INT") Integer level) {
+      if (o == null
+          || xmin == null
+          || ymin == null
+          || xmax == null
+          || ymax == null
+          || level == null) {
+        return null;
+      }
+      Geometry geometry = (Geometry) o;
+      return HilbertDistance.compute(geometry, xmin, ymin, xmax, ymax, level);
+    }
+  }
+
   public static class ST_H3KRing extends ScalarFunction {
     @DataTypeHint(value = "ARRAY<BIGINT>")
     public Long[] eval(
@@ -3148,6 +3175,28 @@ public class Functions {
       Geometry geom1 = (Geometry) o1;
       Geometry geom2 = (Geometry) o2;
       return org.apache.sedona.common.Functions.symDifference(geom1, geom2);
+    }
+  }
+
+  public static class ST_SharedPaths extends ScalarFunction {
+    @DataTypeHint(
+        value = "RAW",
+        rawSerializer = GeometryTypeSerializer.class,
+        bridgedTo = Geometry.class)
+    public Geometry eval(
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeometryTypeSerializer.class,
+                bridgedTo = Geometry.class)
+            Object o1,
+        @DataTypeHint(
+                value = "RAW",
+                rawSerializer = GeometryTypeSerializer.class,
+                bridgedTo = Geometry.class)
+            Object o2) {
+      Geometry geom1 = (Geometry) o1;
+      Geometry geom2 = (Geometry) o2;
+      return org.apache.sedona.common.Functions.sharedPaths(geom1, geom2);
     }
   }
 

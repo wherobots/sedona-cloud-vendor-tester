@@ -494,6 +494,24 @@ public class TestFunctionsV2 extends TestBase {
   }
 
   @Test
+  public void test_ST_HilbertDistance() {
+    registerUDFV2(
+        "ST_HilbertDistance",
+        String.class,
+        double.class,
+        double.class,
+        double.class,
+        double.class,
+        int.class);
+    verifySqlSingleRes(
+        "select sedona.ST_HilbertDistance(ST_GeometryFromWKT('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))'), 0, 0, 1, 1, 2) = 2",
+        true);
+    verifySqlSingleRes(
+        "select sedona.ST_HilbertDistance(ST_GeometryFromWKT('POINT (1 0)'), 0, 0, 1, 1, 16) = 4294967295",
+        true);
+  }
+
+  @Test
   public void test_ST_InteriorRingN() {
     registerUDFV2("ST_InteriorRingN", String.class, int.class);
     verifySqlSingleRes(
@@ -507,6 +525,14 @@ public class TestFunctionsV2 extends TestBase {
     verifySqlSingleRes(
         "select ST_AsText(sedona.ST_Intersection(ST_GeometryFromWKT('LINESTRING(0 0, 2 2)'), ST_GeometryFromWKT('LINESTRING(0 2, 2 0)')))",
         "POINT(1 1)");
+  }
+
+  @Test
+  public void test_ST_SharedPaths() {
+    registerUDFV2("ST_SharedPaths", String.class, String.class);
+    verifySqlSingleRes(
+        "select ST_AsText(sedona.ST_SharedPaths(ST_GeometryFromWKT('LINESTRING(0 0, 10 0)'), ST_GeometryFromWKT('LINESTRING(15 0, 5 0)')))",
+        "GEOMETRYCOLLECTION(MULTILINESTRING EMPTY,MULTILINESTRING((5 0,10 0)))");
   }
 
   @Test

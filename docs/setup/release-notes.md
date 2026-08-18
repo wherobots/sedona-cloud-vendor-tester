@@ -30,6 +30,24 @@
   whose state contains a serialized `ST_MinimumBoundingRadius` result cannot restore from a
   checkpoint or savepoint taken with the previous serializer** — such jobs need to be restarted
   without state, or migrated before upgrading.
+* **GeoPandas `set_crs`**: `GeoSeries.set_crs` and `GeoDataFrame.set_crs` now default to
+  `allow_override=False`, matching GeoPandas. Replacing or removing an existing CRS now requires
+  `allow_override=True`; direct `.crs` assignment remains an explicit override. Calls using the
+  former positional `GeoDataFrame.set_crs(crs, inplace, allow_override)` signature remain
+  temporarily supported with a `FutureWarning`. When CRS metadata is unavailable, validation can
+  require a distributed lookup of the first non-null geometry's SRID.
+* **Mixed coordinate layouts in polygons and multi-geometries**: Serializing a `Polygon`,
+  `MultiPoint`, `MultiLineString`, or `MultiPolygon` whose parts mix XY, XYZ, XYM, or XYZM layouts
+  now raises `IllegalArgumentException` instead of silently losing or corrupting ordinates based on
+  part order. This can affect `ST_Collect` when same-type inputs use different layouts. Normalize
+  all parts to one layout, or use a `GeometryCollection`, whose members are serialized
+  independently.
+
+### New Features
+
+#### GeoPandas API
+
+* [<a href='https://github.com/apache/sedona/issues/3257'>GH-3257</a>] - Implement distributed GeoSeries and GeoDataFrame Hilbert-distance spatial ordering
 
 ## Sedona 1.9.1
 

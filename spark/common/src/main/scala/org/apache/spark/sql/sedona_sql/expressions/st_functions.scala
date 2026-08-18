@@ -300,6 +300,24 @@ object st_functions {
 
   def ST_H3ToGeom(cellIds: Array[Long]): Column = wrapExpression[ST_H3ToGeom](cellIds)
 
+  def ST_HilbertDistance(
+      geometry: Column,
+      xmin: Column,
+      ymin: Column,
+      xmax: Column,
+      ymax: Column,
+      level: Column): Column =
+    wrapExpression[ST_HilbertDistance](geometry, xmin, ymin, xmax, ymax, level)
+
+  def ST_HilbertDistance(
+      geometry: String,
+      xmin: Double,
+      ymin: Double,
+      xmax: Double,
+      ymax: Double,
+      level: Int): Column =
+    wrapExpression[ST_HilbertDistance](geometry, xmin, ymin, xmax, ymax, level)
+
   // Bing Tile functions
   def ST_BingTile(tileX: Column, tileY: Column, zoomLevel: Column): Column =
     wrapExpression[ST_BingTile](tileX, tileY, zoomLevel)
@@ -753,6 +771,9 @@ object st_functions {
     wrapExpression[ST_SimplifyPreserveTopology](geometry, distanceTolerance)
   def ST_SimplifyPreserveTopology(geometry: String, distanceTolerance: Double): Column =
     wrapExpression[ST_SimplifyPreserveTopology](geometry, distanceTolerance)
+
+  def ST_SharedPaths(a: Column, b: Column): Column = wrapExpression[ST_SharedPaths](a, b)
+  def ST_SharedPaths(a: String, b: String): Column = wrapExpression[ST_SharedPaths](a, b)
 
   def ST_Split(input: Column, blade: Column): Column = wrapExpression[ST_Split](input, blade)
   def ST_Split(input: String, blade: String): Column = wrapExpression[ST_Split](input, blade)

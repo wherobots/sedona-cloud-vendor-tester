@@ -514,6 +514,24 @@ public class TestFunctions extends TestBase {
   }
 
   @Test
+  public void test_ST_HilbertDistance() {
+    registerUDF(
+        "ST_HilbertDistance",
+        byte[].class,
+        double.class,
+        double.class,
+        double.class,
+        double.class,
+        int.class);
+    verifySqlSingleRes(
+        "select sedona.ST_HilbertDistance(sedona.ST_GeomFromText('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))'), 0, 0, 1, 1, 2) = 2",
+        true);
+    verifySqlSingleRes(
+        "select sedona.ST_HilbertDistance(sedona.ST_GeomFromText('POINT (1 0)'), 0, 0, 1, 1, 16) = 4294967295",
+        true);
+  }
+
+  @Test
   public void test_ST_InteriorRingN() {
     registerUDF("ST_InteriorRingN", byte[].class, int.class);
     verifySqlSingleRes(
@@ -527,6 +545,14 @@ public class TestFunctions extends TestBase {
     verifySqlSingleRes(
         "select sedona.ST_AsText(sedona.ST_Intersection(sedona.ST_GeomFromText('LINESTRING(0 0, 2 2)'), sedona.ST_GeomFromText('LINESTRING(0 2, 2 0)')))",
         "POINT (1 1)");
+  }
+
+  @Test
+  public void test_ST_SharedPaths() {
+    registerUDF("ST_SharedPaths", byte[].class, byte[].class);
+    verifySqlSingleRes(
+        "select sedona.ST_AsText(sedona.ST_SharedPaths(sedona.ST_GeomFromText('LINESTRING(0 0, 10 0)'), sedona.ST_GeomFromText('LINESTRING(15 0, 5 0)')))",
+        "GEOMETRYCOLLECTION (MULTILINESTRING EMPTY, MULTILINESTRING ((5 0, 10 0)))");
   }
 
   @Test

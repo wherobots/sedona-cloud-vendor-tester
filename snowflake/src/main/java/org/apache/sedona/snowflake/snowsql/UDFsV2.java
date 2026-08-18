@@ -24,6 +24,7 @@ import org.apache.sedona.common.FunctionsProj4;
 import org.apache.sedona.common.Predicates;
 import org.apache.sedona.common.sphere.Haversine;
 import org.apache.sedona.common.sphere.Spheroid;
+import org.apache.sedona.common.utils.HilbertDistance;
 import org.apache.sedona.snowflake.snowsql.annotations.UDFAnnotations;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.Point;
@@ -685,6 +686,15 @@ public class UDFsV2 {
   }
 
   @UDFAnnotations.ParamMeta(
+      argNames = {"geometry", "xmin", "ymin", "xmax", "ymax", "level"},
+      argTypes = {"Geometry", "double", "double", "double", "double", "int"})
+  public static long ST_HilbertDistance(
+      String geometry, double xmin, double ymin, double xmax, double ymax, int level) {
+    return HilbertDistance.compute(
+        GeometrySerde.deserGeoJson(geometry), xmin, ymin, xmax, ymax, level);
+  }
+
+  @UDFAnnotations.ParamMeta(
       argNames = {"geometry", "n"},
       argTypes = {"Geometry", "int"},
       returnTypes = "Geometry")
@@ -700,6 +710,17 @@ public class UDFsV2 {
   public static String ST_Intersection(String leftGeometry, String rightGeometry) {
     return GeometrySerde.serGeoJson(
         Functions.intersection(
+            GeometrySerde.deserGeoJson(leftGeometry), GeometrySerde.deserGeoJson(rightGeometry)));
+  }
+
+  @UDFAnnotations.GeometryOnly
+  @UDFAnnotations.ParamMeta(
+      argNames = {"leftGeometry", "rightGeometry"},
+      argTypes = {"Geometry", "Geometry"},
+      returnTypes = "Geometry")
+  public static String ST_SharedPaths(String leftGeometry, String rightGeometry) {
+    return GeometrySerde.serGeoJson(
+        Functions.sharedPaths(
             GeometrySerde.deserGeoJson(leftGeometry), GeometrySerde.deserGeoJson(rightGeometry)));
   }
 

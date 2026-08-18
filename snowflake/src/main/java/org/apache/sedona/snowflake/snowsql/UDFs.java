@@ -27,6 +27,7 @@ import org.apache.sedona.common.Predicates;
 import org.apache.sedona.common.enums.FileDataSplitter;
 import org.apache.sedona.common.sphere.Haversine;
 import org.apache.sedona.common.sphere.Spheroid;
+import org.apache.sedona.common.utils.HilbertDistance;
 import org.apache.sedona.snowflake.snowsql.annotations.UDFAnnotations;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.Point;
@@ -546,6 +547,13 @@ public class UDFs {
         GeometrySerde.deserialize(geom1), GeometrySerde.deserialize(geom2), densifyFrac);
   }
 
+  @UDFAnnotations.ParamMeta(argNames = {"geometry", "xmin", "ymin", "xmax", "ymax", "level"})
+  public static long ST_HilbertDistance(
+      byte[] geometry, double xmin, double ymin, double xmax, double ymax, int level) {
+    return HilbertDistance.compute(
+        GeometrySerde.deserialize(geometry), xmin, ymin, xmax, ymax, level);
+  }
+
   @UDFAnnotations.ParamMeta(argNames = {"geometry", "n"})
   public static byte[] ST_InteriorRingN(byte[] geometry, int n) {
     return GeometrySerde.serialize(Functions.interiorRingN(GeometrySerde.deserialize(geometry), n));
@@ -555,6 +563,13 @@ public class UDFs {
   public static byte[] ST_Intersection(byte[] leftGeometry, byte[] rightGeometry) {
     return GeometrySerde.serialize(
         Functions.intersection(
+            GeometrySerde.deserialize(leftGeometry), GeometrySerde.deserialize(rightGeometry)));
+  }
+
+  @UDFAnnotations.ParamMeta(argNames = {"leftGeometry", "rightGeometry"})
+  public static byte[] ST_SharedPaths(byte[] leftGeometry, byte[] rightGeometry) {
+    return GeometrySerde.serialize(
+        Functions.sharedPaths(
             GeometrySerde.deserialize(leftGeometry), GeometrySerde.deserialize(rightGeometry)));
   }
 

@@ -16,6 +16,7 @@
 # under the License.
 
 from decimal import Decimal
+import typing
 
 import shapely
 import numpy as np
@@ -45,6 +46,11 @@ from shapely.geometry import (
 )
 import pytest
 from packaging.version import parse as parse_version
+
+requires_geopandas_shared_paths = pytest.mark.skipif(
+    parse_version(gpd.__version__) < parse_version("1.0.0"),
+    reason=f"Tests require geopandas>=1.0.0, but found v{gpd.__version__}",
+)
 
 
 @pytest.mark.skipif(
@@ -388,6 +394,11 @@ class TestGeoSeries(TestGeopandasBase):
             ]
         )
         self.check_sgpd_equals_gpd(result, expected)
+
+        numeric_name = sgpd.GeoSeries(gpd.GeoSeries([Point(1, 1), None], name=0))
+        numeric_name_result = numeric_name.fillna(Point(0, 0))
+        numeric_name_expected = gpd.GeoSeries([Point(1, 1), Point(0, 0)], name=0)
+        self.check_sgpd_equals_gpd(numeric_name_result, numeric_name_expected)
         result = s.fillna(Polygon([(0, 1), (2, 1), (1, 2)]))
         expected = gpd.GeoSeries(
             [
@@ -551,7 +562,7 @@ class TestGeoSeries(TestGeopandasBase):
         df_result = geoseries.to_geoframe().bounds
         pd.testing.assert_frame_equal(df_result.to_pandas(), expected)
 
-    def test_total_bounds(self):
+    def test_total_bounds(self, monkeypatch):
         d = [
             Point(3, -1),
             Polygon([(0, 0), (1, 1), (1, 0)]),
@@ -559,17 +570,220 @@ class TestGeoSeries(TestGeopandasBase):
             None,
         ]
         geoseries = sgpd.GeoSeries(d, crs="EPSG:4326")
+        empty_geoseries = sgpd.GeoSeries([], crs="EPSG:4326")
+        all_empty_geoseries = sgpd.GeoSeries([Point(), Polygon()], crs="EPSG:4326")
+
+        spark_dataframe_type = type(geoseries._internal.spark_frame)
+        original_first = spark_dataframe_type.first
+        action_count = 0
+
+        def counting_first(frame):
+            nonlocal action_count
+            action_count += 1
+            return original_first(frame)
+
+        # Spark 4 uses a classic DataFrame subclass that overrides ``first``.
+        # Patch the runtime class so the assertion works across Spark versions.
+        monkeypatch.setattr(spark_dataframe_type, "first", counting_first)
+
         result = geoseries.total_bounds
         expected = np.array([0.0, -1.0, 3.0, 2.0])
         np.testing.assert_array_equal(result, expected)
+        assert action_count == 1
 
+        action_count = 0
         df_result = geoseries.to_geoframe().total_bounds
         np.testing.assert_array_equal(df_result, expected)
+        assert action_count == 1
+
+        action_count = 0
+        empty_result = empty_geoseries.total_bounds
+        np.testing.assert_array_equal(empty_result, np.full(4, np.nan))
+        assert action_count == 1
+
+        action_count = 0
+        all_empty_result = all_empty_geoseries.total_bounds
+        np.testing.assert_array_equal(all_empty_result, np.full(4, np.nan))
+        assert action_count == 1
+
+    @pytest.mark.parametrize(
+        ("level", "expected"),
+        [
+            (2, [0, 10, 15, 2]),
+            (3, [0, 42, 63, 10]),
+            (16, [0, 2863311530, 4294967295, 715827882]),
+        ],
+    )
+    def test_hilbert_distance(self, level, expected):
+        geometries = [
+            Point(0, 0),
+            Point(1, 1),
+            Point(1, 0),
+            Polygon([(0, 0), (0, 1), (1, 1), (1, 0)]),
+        ]
+        index = pd.MultiIndex.from_tuples(
+            [("a", 1), ("a", 2), ("b", 1), ("b", 2)],
+            names=["group", "feature_id"],
+        )
+        source = GeoSeries(
+            geometries,
+            index=index,
+            name="source_geometry",
+            crs="EPSG:4326",
+        )
+
+        result = source.hilbert_distance(
+            total_bounds=(0, 0, 1, 1),
+            level=level,
+        )
+        pd.testing.assert_series_equal(
+            result.to_pandas(),
+            pd.Series(
+                expected,
+                index=index,
+                name="hilbert_distance",
+                dtype="int64",
+            ),
+            check_index_type=False,
+        )
+
+        # GeoDataFrame delegates to the active geometry column, not to the
+        # first geometry-typed column in the frame.
+        if level == 2:
+            frame = GeoDataFrame(
+                gpd.GeoDataFrame(
+                    {
+                        "decoy": gpd.GeoSeries(
+                            [Point(0, 0)] * len(geometries),
+                            index=index,
+                            crs="EPSG:4326",
+                        ),
+                        "active": gpd.GeoSeries(
+                            geometries,
+                            index=index,
+                            crs="EPSG:4326",
+                        ),
+                    },
+                    index=index,
+                    geometry="active",
+                    crs="EPSG:4326",
+                )
+            )
+            pd.testing.assert_series_equal(
+                frame.hilbert_distance(
+                    total_bounds=(0, 0, 1, 1),
+                    level=level,
+                ).to_pandas(),
+                pd.Series(
+                    expected,
+                    index=index,
+                    name="hilbert_distance",
+                    dtype="int64",
+                ),
+                check_index_type=False,
+            )
+
+    def test_hilbert_distance_uses_envelope_midpoint_extent(self):
+        source = GeoSeries(
+            [box(-100, -100, 100, 100), Point(10, 10)],
+            index=pd.Index(["large", "point"], name="feature"),
+        )
+
+        # The inferred extent is (0, 0, 10, 10), based on envelope
+        # midpoints. It is deliberately different from source.total_bounds.
+        expected = pd.Series(
+            [0, 2863311530],
+            index=pd.Index(["large", "point"], name="feature"),
+            name="hilbert_distance",
+            dtype="int64",
+        )
+        pd.testing.assert_series_equal(
+            source.hilbert_distance().to_pandas(),
+            expected,
+            check_index_type=False,
+        )
+
+        zero_width = GeoSeries([Point(0, 0), Point(0, 2), Point(0, 1)])
+        pd.testing.assert_series_equal(
+            zero_width.hilbert_distance(level=2).to_pandas(),
+            pd.Series([0, 5, 3], name="hilbert_distance", dtype="int64"),
+        )
+
+    @pytest.mark.parametrize("total_bounds", [None, (0, 0, 1, 1)])
+    def test_hilbert_distance_uses_one_native_summary_action(
+        self,
+        monkeypatch,
+        total_bounds,
+    ):
+        source = GeoSeries([Point(0, 0), Point(1, 1)])
+        spark_dataframe_type = type(source._internal.spark_frame)
+        original_first = spark_dataframe_type.first
+        action_count = 0
+
+        def counting_first(frame):
+            nonlocal action_count
+            action_count += 1
+            return original_first(frame)
+
+        monkeypatch.setattr(spark_dataframe_type, "first", counting_first)
+
+        result = source.hilbert_distance(total_bounds=total_bounds, level=3)
+        assert action_count == 1
+
+        spark_frame = result._internal.spark_frame
+        if hasattr(spark_frame, "_jdf"):
+            plan = spark_frame._jdf.queryExecution().optimizedPlan().toString()
+            assert "BatchEvalPython" not in plan
+            assert "ArrowEvalPython" not in plan
+            assert "PythonUDF" not in plan
+
+    def test_hilbert_distance_rejects_missing_and_empty_geometries(self):
+        source = GeoSeries(
+            [
+                Point(0, 0),
+                None,
+                Point(),
+                LineString(),
+                Polygon(),
+                MultiPoint(),
+                MultiLineString(),
+                MultiPolygon(),
+                GeometryCollection(),
+            ]
+        )
+        with pytest.raises(
+            ValueError,
+            match="cannot be computed on a GeoSeries with empty or missing",
+        ):
+            source.hilbert_distance(total_bounds=(0, 0, 1, 1))
+
+        empty = GeoSeries([], crs="EPSG:4326")
+        with pytest.raises(ValueError, match="cannot infer total bounds"):
+            empty.hilbert_distance()
+
+        explicit_empty = empty.hilbert_distance(total_bounds=(0, 0, 1, 1))
+        assert explicit_empty.name == "hilbert_distance"
+        assert explicit_empty.to_pandas().empty
+
+    def test_hilbert_distance_validates_level(self):
+        source = GeoSeries([Point(0, 0), Point(1, 1)])
+
+        with pytest.raises(ValueError, match="Level out of range"):
+            source.hilbert_distance(level=17)
+        with pytest.raises(TypeError, match="level must be an integer"):
+            source.hilbert_distance(level=1.5)
+
+        pd.testing.assert_series_equal(
+            source.hilbert_distance(level=0).to_pandas(),
+            pd.Series([0, 0], name="hilbert_distance", dtype="int64"),
+        )
 
     # These tests were taken directly from the TestEstimateUtmCrs class in the geopandas test suite
     # https://github.com/geopandas/geopandas/blob/main/geopandas/tests/test_array.py
     def test_estimate_utm_crs(self):
         from pyproj import CRS
+
+        assert typing.get_type_hints(GeoSeries.estimate_utm_crs)["return"] is CRS
 
         # setup
         esb = Point(-73.9847, 40.7484)
@@ -4869,6 +5083,233 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         )
         self.check_sgpd_equals_gpd(df_result, expected)
 
+    @requires_geopandas_shared_paths
+    def test_shared_paths(self):
+        reference = LineString([(0, 0), (2, 0), (2, 1)])
+        geometries = [
+            LineString([(0, 0), (2, 0), (2, 2)]),
+            LineString([(2, 2), (2, 0), (0, 0)]),
+            MultiLineString(
+                [
+                    [(0, 0), (2, 0)],
+                    [(2, 2), (2, 1)],
+                ]
+            ),
+            LineString(),
+            None,
+        ]
+        index = pd.MultiIndex.from_tuples(
+            [
+                ("same", 1),
+                ("opposite", 2),
+                ("multi", 3),
+                ("empty", 4),
+                ("null", 5),
+            ],
+            names=["kind", "row"],
+        )
+        source = GeoSeries(
+            geometries,
+            index=index,
+            crs="EPSG:3857",
+            name="roads",
+        )
+        expected = gpd.GeoSeries(
+            geometries,
+            index=index,
+            crs="EPSG:3857",
+            name="roads",
+        ).shared_paths(reference)
+
+        result = source.shared_paths(reference)
+
+        self.check_sgpd_equals_gpd(result, expected)
+        assert result.name is None
+        assert result.crs == source.crs == expected.crs
+        actual = result.to_geopandas()
+        for label in index[:-1]:
+            actual_collection = actual.loc[label]
+            expected_collection = expected.loc[label]
+            assert actual_collection.geom_type == "GeometryCollection"
+            assert len(actual_collection.geoms) == 2
+            for component in range(2):
+                assert actual_collection.geoms[component].equals(
+                    expected_collection.geoms[component]
+                )
+        assert actual.loc[("null", 5)] is None
+
+        srids = result._internal.spark_frame.select(
+            stf.ST_SRID(result.spark.column).alias("srid")
+        ).collect()
+        assert {row.srid for row in srids if row.srid is not None} == {3857}
+
+        frame_source = GeoSeries(
+            geometries,
+            index=pd.Index(["same", "opposite", "multi", "empty", "null"]),
+            crs="EPSG:3857",
+        )
+        frame_expected = gpd.GeoSeries(
+            geometries,
+            index=pd.Index(["same", "opposite", "multi", "empty", "null"]),
+            crs="EPSG:3857",
+        ).shared_paths(reference)
+        frame_result = frame_source.to_geoframe().shared_paths(reference)
+        assert isinstance(frame_result, GeoSeries)
+        self.check_sgpd_equals_gpd(frame_result, frame_expected)
+        assert frame_result.crs == frame_source.crs
+
+        with pytest.raises(TypeError, match="'other' must be"):
+            source.shared_paths(None)
+
+    def test_shared_paths_avoids_unnecessary_srid_copies(self, monkeypatch):
+        left = GeoSeries(
+            [LineString([(0, 0), (2, 0)])],
+            crs="EPSG:3857",
+        )
+        right = GeoSeries(
+            [LineString([(0, 0), (1, 0)])],
+            crs="EPSG:3857",
+        )
+        reference = LineString([(0, 0), (1, 0)])
+        original_set_srid = stf.ST_SetSRID
+        set_srid_arguments = []
+
+        def recording_set_srid(geometry, srid):
+            set_srid_arguments.append(srid)
+            return original_set_srid(geometry, srid)
+
+        monkeypatch.setattr(stf, "ST_SetSRID", recording_set_srid)
+
+        matching_result = left.shared_paths(right, align=False)
+        assert set_srid_arguments == []
+        assert matching_result.to_geopandas().iloc[0] is not None
+
+        scalar_result = left.shared_paths(reference)
+        assert set_srid_arguments == [3857]
+        assert scalar_result.to_geopandas().iloc[0] is not None
+
+    @requires_geopandas_shared_paths
+    def test_shared_paths_duplicate_multiindex_alignment(self):
+        left_index = pd.MultiIndex.from_tuples(
+            [("a", 1), ("a", 1), ("b", 2)], names=["group", "row"]
+        )
+        right_index = pd.MultiIndex.from_tuples(
+            [("a", 1), ("a", 1), ("c", 3)], names=["group", "row"]
+        )
+        left_geometries = [
+            LineString([(0, 0), (2, 0)]),
+            LineString([(2, 0), (0, 0)]),
+            LineString([(0, 1), (2, 1)]),
+        ]
+        right_geometries = [
+            LineString([(0, 0), (1, 0)]),
+            LineString([(2, 0), (1, 0)]),
+            LineString([(0, 3), (2, 3)]),
+        ]
+        left = GeoSeries(left_geometries, index=left_index, crs="EPSG:4326")
+        right = GeoSeries(right_geometries, index=right_index, crs="EPSG:4326")
+        expected_left = gpd.GeoSeries(
+            left_geometries, index=left_index, crs="EPSG:4326"
+        )
+        expected_right = gpd.GeoSeries(
+            right_geometries, index=right_index, crs="EPSG:4326"
+        )
+
+        result = left.shared_paths(right, align=True)
+        expected = expected_left.shared_paths(expected_right, align=True)
+
+        actual = result.to_geopandas()
+        assert len(actual) == 6
+        pd.testing.assert_index_equal(actual.index, expected.index)
+        assert result.crs == left.crs
+        for actual_collection, expected_collection in zip(actual, expected):
+            if actual_collection is None or expected_collection is None:
+                assert actual_collection is None and expected_collection is None
+                continue
+            for component in range(2):
+                assert actual_collection.geoms[component].equals(
+                    expected_collection.geoms[component]
+                )
+
+        positional_result = left.shared_paths(right, align=False)
+        positional_expected = expected_left.shared_paths(expected_right, align=False)
+        positional_actual = positional_result.to_geopandas()
+        pd.testing.assert_index_equal(
+            positional_actual.index, positional_expected.index
+        )
+        for actual_collection, expected_collection in zip(
+            positional_actual, positional_expected
+        ):
+            for component in range(2):
+                assert actual_collection.geoms[component].equals(
+                    expected_collection.geoms[component]
+                )
+
+    @requires_geopandas_shared_paths
+    def test_shared_paths_default_alignment_warning_and_length_validation(self):
+        left = GeoSeries(
+            [LineString([(0, 0), (2, 0)])],
+            index=pd.Index(["left"], name="feature"),
+        )
+        right = GeoSeries(
+            [LineString([(0, 0), (1, 0)])],
+            index=pd.Index(["right"], name="feature"),
+        )
+
+        with pytest.warns(
+            UserWarning,
+            match="The indices of the left and right GeoSeries' are not equal",
+        ):
+            result = left.shared_paths(right)
+        expected = gpd.GeoSeries(
+            [LineString([(0, 0), (2, 0)])],
+            index=pd.Index(["left"], name="feature"),
+        ).shared_paths(
+            gpd.GeoSeries(
+                [LineString([(0, 0), (1, 0)])],
+                index=pd.Index(["right"], name="feature"),
+            ),
+            align=True,
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
+        with pytest.warns(UserWarning, match="CRS mismatch") as warning_info:
+            crs_result = GeoSeries(
+                [LineString([(0, 0), (2, 0)])], crs="EPSG:4326"
+            ).shared_paths(
+                GeoSeries([LineString([(0, 0), (1, 0)])], crs="EPSG:3857"),
+                align=False,
+            )
+        crs_warning = next(
+            warning
+            for warning in warning_info
+            if "CRS mismatch" in str(warning.message)
+        )
+        assert crs_warning.filename == __file__
+        assert crs_result.crs.to_epsg() == 4326
+        with pytest.warns(UserWarning, match="CRS mismatch"):
+            crs_expected = gpd.GeoSeries(
+                [LineString([(0, 0), (2, 0)])], crs="EPSG:4326"
+            ).shared_paths(
+                gpd.GeoSeries([LineString([(0, 0), (1, 0)])], crs="EPSG:3857"),
+                align=False,
+            )
+        self.check_sgpd_equals_gpd(crs_result, crs_expected)
+
+        with pytest.raises(
+            ValueError,
+            match=r"Lengths of inputs do not match\. Left: 1, Right: 2",
+        ):
+            left.shared_paths(
+                GeoSeries(
+                    [
+                        LineString([(0, 0), (1, 0)]),
+                        LineString([(0, 1), (1, 1)]),
+                    ]
+                ),
+                align=False,
+            )
+
     def test_intersection_all(self):
         s = GeoSeries([box(0, 0, 2, 2), box(1, 1, 3, 3)])
         result = s.intersection_all()
@@ -5167,8 +5608,91 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         result = GeoSeries([Point(0, 0), Point(1, 1)], index=index).geom_equals(
             Point(0, 0)
         )
-        expected = pd.Series([True, False], index=pd.Index(["a", "b"], name="group"))
+        expected = pd.Series([True, False], index=index)
         self.check_pd_series_equal(result, expected)
+
+    def test_binary_operation_single_index_alignment_stays_lazy(self, monkeypatch):
+        left_geometries = [box(0, 0, 2, 2), box(3, 3, 5, 5)]
+        right_geometries = [box(1, 1, 4, 4), box(0, 0, 1, 1)]
+        left = GeoSeries(left_geometries, index=["a", "b"])
+        right = GeoSeries(right_geometries, index=["b", "a"])
+        sequence_attachments = []
+        original_attach = InternalFrame.attach_distributed_sequence_column
+
+        def recording_attach(sdf, column_name):
+            sequence_attachments.append(column_name)
+            return original_attach(sdf, column_name)
+
+        monkeypatch.setattr(
+            InternalFrame,
+            "attach_distributed_sequence_column",
+            recording_attach,
+        )
+
+        result = left.intersection(right, align=True)
+        assert sequence_attachments == []
+        expected = gpd.GeoSeries(left_geometries, index=["a", "b"]).intersection(
+            gpd.GeoSeries(right_geometries, index=["b", "a"]), align=True
+        )
+        self.check_sgpd_equals_gpd(result, expected)
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [
+            ("intersection", {}),
+            ("shortest_line", {}),
+            ("snap", {"tolerance": 0.25}),
+        ],
+    )
+    def test_binary_geometry_operations_preserve_duplicate_multiindex(
+        self, method, kwargs
+    ):
+        left_index = pd.MultiIndex.from_tuples(
+            [("a", 1), ("a", 1), ("b", 2)], names=["group", "row"]
+        )
+        right_index = pd.MultiIndex.from_tuples(
+            [("a", 1), ("a", 1), ("c", 3)], names=["group", "row"]
+        )
+        left = GeoSeries(
+            [
+                LineString([(0, 0), (2, 0)]),
+                LineString([(0, 0), (2, 0)]),
+                LineString([(0, 1), (2, 1)]),
+            ],
+            index=left_index,
+        )
+        right = GeoSeries(
+            [
+                LineString([(0, 0), (1, 0)]),
+                LineString([(1, 0), (2, 0)]),
+                LineString([(0, 3), (2, 3)]),
+            ],
+            index=right_index,
+        )
+
+        result = getattr(left, method)(right, align=True, **kwargs)
+        expected = getattr(gpd.GeoSeries(left.to_geopandas()), method)(
+            gpd.GeoSeries(right.to_geopandas()),
+            align=True,
+            **kwargs,
+        )
+
+        self.check_sgpd_equals_gpd(result, expected)
+        assert len(result) == 6
+
+        identical_right = GeoSeries(
+            right.to_geopandas().array,
+            index=left_index,
+        )
+        identical_result = getattr(left, method)(identical_right, align=True, **kwargs)
+        identical_expected = getattr(gpd.GeoSeries(left.to_geopandas()), method)(
+            gpd.GeoSeries(identical_right.to_geopandas()),
+            align=True,
+            **kwargs,
+        )
+
+        self.check_sgpd_equals_gpd(identical_result, identical_expected)
+        assert len(identical_result) == 3
 
     def test_geom_equals_exact(self):
         s = GeoSeries([Point(0, 1.1), Point(0, 1.0), Point(0, 1.2)])
@@ -5537,9 +6061,9 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         assert geo_series.crs.to_epsg() == 4326
 
         with pytest.raises(ValueError):
-            geo_series.set_crs(4328, allow_override=False)
+            geo_series.set_crs(4328)
         with pytest.raises(ValueError):
-            geo_series.set_crs(None, allow_override=False)
+            geo_series.set_crs(None)
 
         geo_series = geo_series.set_crs(None, allow_override=True)
         assert geo_series.crs == None
@@ -5547,8 +6071,12 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         # Check that the name is preserved for set_crs
         geo_series.name = "geometry"
 
-        geo_series.set_crs(4326, inplace=True)
+        inplace_result = geo_series.set_crs(4326, inplace=True)
+        assert inplace_result is geo_series
         assert geo_series.crs.to_epsg() == 4326
+
+        geo_series.crs = 3857
+        assert geo_series.crs.to_epsg() == 3857
 
         # Check that the name is preserved for set_crs after inplace=True
         geo_series.name = "geometry"

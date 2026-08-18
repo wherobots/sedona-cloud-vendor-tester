@@ -245,6 +245,7 @@ These functions compute results arising from the overlay of two geometries. Thes
 | :--- | :--- | :--- | :--- |
 | [ST_Difference](Overlay-Functions/ST_Difference.md) | Geometry | Return the difference between geometry A and B (return part of geometry A that does not intersect geometry B) | v1.5.0 |
 | [ST_Intersection](Overlay-Functions/ST_Intersection.md) | Geometry | Return the intersection geometry of A and B | v1.5.0 |
+| [ST_SharedPaths](Overlay-Functions/ST_SharedPaths.md) | Geometry | Returns the paths shared by two lineal geometries, grouped by traversal direction. | v2.0.0 |
 | [ST_SubDivide](Overlay-Functions/ST_SubDivide.md) | `Array<Geometry>` | Returns list of geometries divided based of given maximum number of vertices. | v1.5.0 |
 | [ST_SymDifference](Overlay-Functions/ST_SymDifference.md) | Geometry | Return the symmetrical difference between geometry A and B (return parts of geometries which are in either of the sets, but not in their intersection) | v1.5.0 |
 | [ST_UnaryUnion](Overlay-Functions/ST_UnaryUnion.md) | Geometry | This variant of [ST_Union](Overlay-Functions/ST_Union.md) operates on a single geometry input. The input geometry can be a simple Geometry type, a MultiGeometry, or a GeometryCollection. The function calculates the ge... | v1.6.1 |
@@ -330,7 +331,7 @@ These functions produce or operate on bounding boxes and compute extent values.
 
 ## Spatial Indexing
 
-These functions work with spatial indexing systems including Bing Tiles, H3, S2, and GeoHash.
+These functions work with spatial indexing systems including Bing Tiles, H3, Hilbert curves, S2, and GeoHash.
 
 | Function | Return type | Description | Since |
 | :--- | :--- | :--- | :--- |
@@ -349,5 +350,6 @@ These functions work with spatial indexing systems including Bing Tiles, H3, S2,
 | [ST_H3CellIDs](Spatial-Indexing/ST_H3CellIDs.md) | `Array<Long>` | Cover the geometry by H3 cell IDs with the given resolution(level). To understand the cell statistics please refer to [H3 Doc](https://h3geo.org/docs/core-library/restable) H3 native fill functions... | v1.5.0 |
 | [ST_H3KRing](Spatial-Indexing/ST_H3KRing.md) | `Array<Long>` | return the result of H3 function [gridDisk(cell, k)](https://h3geo.org/docs/api/traversal#griddisk). | v1.5.0 |
 | [ST_H3ToGeom](Spatial-Indexing/ST_H3ToGeom.md) | `Array<Geometry>` | Return the result of H3 function [cellsToMultiPolygon(cells)](https://h3geo.org/docs/api/regions#cellstolinkedmultipolygon--cellstomultipolygon). | v1.6.0 |
+| [ST_HilbertDistance](Spatial-Indexing/ST_HilbertDistance.md) | Long | Maps the midpoint of a geometry's envelope to an unsigned Hilbert-curve address within a supplied extent. | v2.0.0 |
 | [ST_S2CellIDs](Spatial-Indexing/ST_S2CellIDs.md) | `Array<Long>` | Cover the geometry with Google S2 Cells, return the corresponding cell IDs with the given level. The level indicates the [size of cells](https://s2geometry.io/resources/s2cell_statistics.html). With... | v1.4.0 |
 | [ST_S2ToGeom](Spatial-Indexing/ST_S2ToGeom.md) | `Array<Geometry>` | Returns an array of Polygons for the corresponding S2 cell IDs. | v1.6.0 |

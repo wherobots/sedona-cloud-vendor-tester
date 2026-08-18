@@ -16,6 +16,7 @@
 # under the License.
 import shutil
 import tempfile
+import typing
 
 from shapely.geometry import (
     Point,
@@ -31,6 +32,7 @@ from shapely.geometry import (
 import shapely
 
 from sedona.spark.geopandas import GeoDataFrame, GeoSeries
+from sedona.spark.sql import st_functions as stf
 from tests.geopandas.test_geopandas_base import TestGeopandasBase
 import pyspark.pandas as ps
 import pandas as pd
@@ -277,6 +279,163 @@ class TestGeoDataFrame(TestGeopandasBase):
         with pytest.raises(NotImplementedError, match="byte_order"):
             gdf.to_wkb(byte_order=0)
 
+    def test_explode_uses_native_plan_and_preserves_geometry_metadata(self):
+        source = GeoDataFrame(
+            {
+                "name": ["first", "second"],
+                "geometry": [
+                    MultiPoint([(0, 0), (1, 1)]),
+                    GeometryCollection([Point(2, 2), MultiPoint([(3, 3), (4, 4)])]),
+                ],
+            },
+            geometry="geometry",
+            crs="EPSG:3857",
+        )
+
+        result = source.explode(index_parts=True)
+
+        assert isinstance(result, GeoDataFrame)
+        assert result.active_geometry_name == "geometry"
+        assert result.crs.to_epsg() == 3857
+        assert result.index.names == [None, None]
+        assert result.to_geopandas()["name"].tolist() == [
+            "first",
+            "first",
+            "second",
+            "second",
+        ]
+
+        srids = result._internal.spark_frame.select(
+            stf.ST_SRID(result.geometry.spark.column).alias("srid")
+        ).collect()
+        assert {row.srid for row in srids} == {3857}
+
+        spark_frame = result._internal.spark_frame
+        if hasattr(spark_frame, "_jdf"):
+            plan = spark_frame._jdf.queryExecution().executedPlan().toString()
+            assert "Generate" in plan
+            assert "BatchEvalPython" not in plan
+            assert "ArrowEvalPython" not in plan
+            assert "Join" not in plan
+
+    def test_explode_all_rows_dropped_preserves_geometry_metadata(self):
+        source = GeoDataFrame(
+            {
+                "value": [1, 2, 3],
+                "shape": [MultiPoint(), GeometryCollection(), None],
+            },
+            geometry="shape",
+            crs="EPSG:4326",
+        )
+
+        result = source.explode(ignore_index=True)
+
+        assert len(result) == 0
+        assert result.active_geometry_name == "shape"
+        assert isinstance(result["shape"], GeoSeries)
+        assert result.crs.to_epsg() == 4326
+        collected = result.to_geopandas()
+        assert str(collected.dtypes["shape"]) == "geometry"
+        assert collected.crs.to_epsg() == 4326
+
+    def test_explode_non_geometry_column(self):
+        source_gpd = gpd.GeoDataFrame(
+            {
+                "values": [[1, 2], [], [3]],
+                "shape": [Point(0, 0), Point(1, 1), Point(2, 2)],
+            },
+            geometry="shape",
+            crs="EPSG:4326",
+        )
+        result = GeoDataFrame(source_gpd).explode("values", ignore_index=True)
+
+        assert isinstance(result, GeoDataFrame)
+        assert result.active_geometry_name == "shape"
+        assert result.crs.to_epsg() == 4326
+        assert_frame_equal(
+            result.to_geopandas(),
+            source_gpd.explode("values", ignore_index=True),
+            check_dtype=False,
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"index_parts": True},
+            {"ignore_index": True},
+        ],
+    )
+    def test_explode_geometry_column_uses_active_geometry(self, kwargs):
+        expected_source = gpd.GeoDataFrame(
+            {
+                "before": [1],
+                "geometry": [MultiPoint([(0, 0), (1, 1)])],
+                "other": gpd.GeoSeries(
+                    [MultiPoint([(10, 10), (20, 20)])],
+                    crs="EPSG:3857",
+                ),
+                "after": [2],
+            },
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+
+        source = GeoDataFrame(
+            {
+                "before": [1],
+                "geometry": [MultiPoint([(0, 0), (1, 1)])],
+                "other": [MultiPoint([(10, 10), (20, 20)])],
+                "after": [2],
+            },
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+        # Seed the inactive column's CRS through the distributed API so this
+        # test isolates explode's metadata propagation from local conversion.
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            source = source.set_geometry("other", crs="EPSG:3857")
+            source = source.set_geometry("geometry", crs="EPSG:4326")
+
+        expected = expected_source.explode(column="other", **kwargs)
+        result = source.explode(column="other", **kwargs)
+
+        from geopandas.testing import assert_geodataframe_equal
+
+        assert result["other"].crs.to_epsg() == 3857
+        assert_geodataframe_equal(
+            result.to_geopandas(),
+            expected,
+            check_index_type=False,
+        )
+
+    def test_explode_internal_name_collisions(self):
+        source_gpd = gpd.GeoDataFrame(
+            {
+                "__frame_explode_index_0__": [1],
+                "__frame_explode_data_0__": [2],
+                "__frame_explode_parent_order__": [3],
+                "__frame_explode_position__": [4],
+                "__frame_explode_value__": [5],
+                "__frame_explode_sequence__": [6],
+                "geometry": [MultiPoint([(0, 0), (1, 1)])],
+            },
+            geometry="geometry",
+        )
+
+        result = GeoDataFrame(source_gpd).explode(index_parts=True).to_geopandas()
+        expected = source_gpd.explode(index_parts=True)
+
+        from geopandas.testing import assert_geodataframe_equal
+
+        assert_geodataframe_equal(result, expected, check_index_type=False)
+
+    def test_explode_docstring_examples_are_syntactically_valid(self):
+        import doctest
+
+        examples = doctest.DocTestParser().get_examples(GeoDataFrame.explode.__doc__)
+        for example in examples:
+            compile(example.source, "<GeoDataFrame.explode>", "single")
+
     def test_getitem(self):
         geoms = [Point(x, x) for x in range(3)]
         ids = [1, 2, 3]
@@ -413,8 +572,44 @@ class TestGeoDataFrame(TestGeopandasBase):
         assert sgpd_df.crs.to_epsg() == 4326
 
         with ps.option_context("compute.ops_on_diff_frames", True):
-            sgpd_df.set_crs(3857, inplace=True, allow_override=True)
+            legacy = sgpd.GeoDataFrame({"geometry": [Point(0, 0)]}, crs="EPSG:4326")
+        with pytest.warns(FutureWarning, match="former GeoDataFrame.set_crs"):
+            with ps.option_context("compute.ops_on_diff_frames", True):
+                legacy_result = legacy.set_crs(3857, True)
+        assert legacy_result is legacy
+        assert legacy.crs.to_epsg() == 3857
+
+        with pytest.warns(FutureWarning, match="former GeoDataFrame.set_crs"):
+            with pytest.raises(ValueError):
+                legacy.set_crs(4326, False, False)
+
+        with pytest.raises(TypeError, match="at most 3 legacy arguments"):
+            legacy.set_crs(4326, False, False, False)
+        for duplicate_keyword in ({"epsg": 3857}, {"inplace": True}):
+            with pytest.raises(
+                TypeError, match="duplicate positional and keyword arguments"
+            ):
+                legacy.set_crs(4326, False, **duplicate_keyword)
+        with pytest.raises(TypeError, match="multiple values for 'allow_override'"):
+            legacy.set_crs(4326, False, False, allow_override=True)
+
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            inplace_result = sgpd_df.set_crs(
+                epsg=3857, inplace=True, allow_override=True
+            )
+        assert inplace_result is sgpd_df
         assert sgpd_df.crs.to_epsg() == 3857
+
+        with pytest.raises(ValueError):
+            sgpd_df.set_crs(4326)
+
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            equivalent = sgpd_df.set_crs(epsg=3857)
+        assert equivalent.crs.to_epsg() == 3857
+
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            sgpd_df.crs = 4326
+        assert sgpd_df.crs.to_epsg() == 4326
 
         with ps.option_context("compute.ops_on_diff_frames", True):
             sgpd_df = sgpd_df.set_crs(None, allow_override=True)
@@ -454,6 +649,29 @@ class TestGeoDataFrame(TestGeopandasBase):
             custom_result = all_null.set_crs(custom_crs)
         assert custom_result.crs == custom_crs
         assert custom_result.to_geopandas().crs == custom_crs
+
+    def test_estimate_utm_crs(self):
+        from pyproj import CRS
+
+        assert typing.get_type_hints(GeoDataFrame.estimate_utm_crs)["return"] is CRS
+
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            landmarks = sgpd.GeoDataFrame(
+                {
+                    "name": ["Empire State Building", "Statue of Liberty"],
+                    "geometry": [Point(-73.9847, 40.7484), Point(-74.0446, 40.6893)],
+                },
+                crs="EPSG:4326",
+            )
+
+        assert landmarks.estimate_utm_crs() == CRS("EPSG:32618")
+        assert landmarks.estimate_utm_crs("NAD83") == CRS("EPSG:26918")
+        with ps.option_context("compute.ops_on_diff_frames", True):
+            projected = landmarks.to_crs("EPSG:3857")
+        assert projected.estimate_utm_crs() == CRS("EPSG:32618")
+
+        with pytest.raises(RuntimeError, match="crs must be set"):
+            sgpd.GeoDataFrame({"geometry": [Point(0, 0)]}).estimate_utm_crs()
 
     def test_crs_metadata_survives_frame_selection(self):
         source = GeoSeries([None], name="geometry", crs=4326)
@@ -723,6 +941,20 @@ class TestGeoDataFrame(TestGeopandasBase):
 
         result = GeoDataFrame.from_arrow(gdf.to_arrow())
         self.check_sgpd_df_equals_gpd_df(result, gdf)
+
+        if parse_version(gpd.__version__) >= parse_version("1.1.0"):
+            result = GeoDataFrame.from_arrow(
+                gdf.to_arrow(), to_pandas_kwargs={"use_threads": False}
+            )
+            self.check_sgpd_df_equals_gpd_df(result, gdf)
+        else:
+            with pytest.raises(
+                NotImplementedError,
+                match="to_pandas_kwargs requires GeoPandas >= 1.1",
+            ):
+                GeoDataFrame.from_arrow(
+                    gdf.to_arrow(), to_pandas_kwargs={"use_threads": False}
+                )
 
         gdf = gpd.GeoDataFrame(
             {

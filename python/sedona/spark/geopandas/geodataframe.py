@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import builtins
+from functools import wraps
 from typing import Any, Literal, Callable, Union
 import typing
 
@@ -28,6 +29,8 @@ import geopandas as gpd
 import pandas as pd
 import pyspark.pandas as pspd
 import sedona.spark.geopandas as sgpd
+from packaging.version import parse as parse_version
+from pyproj import CRS
 from pyspark.pandas import Series as PandasOnSparkSeries
 from pyspark.pandas.frame import DataFrame as PandasOnSparkDataFrame
 from pyspark.pandas.internal import (
@@ -55,6 +58,7 @@ from pyspark.sql.types import (
 from pyspark.pandas.utils import log_advice
 
 from sedona.spark.geopandas._crs import copy_crs_metadata, with_crs_metadata
+from sedona.spark.geopandas._explode import expand_geometry_column
 from sedona.spark.geopandas._typing import Label
 from sedona.spark.geopandas.base import GeoFrame
 from sedona.spark.sql import st_aggregates as sta
@@ -144,6 +148,48 @@ def _not_implemented_error(method_name: str, additional_info: str = "") -> str:
     )
 
     return base_message + workaround
+
+
+def _support_legacy_set_crs_positionals(method):
+    """Preserve the former ``(crs, inplace, allow_override)`` positional form."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if len(args) >= 2 and isinstance(args[1], bool):
+            if len(args) > 3:
+                raise TypeError(
+                    "GeoDataFrame.set_crs() accepts at most 3 legacy arguments"
+                )
+            if "epsg" in kwargs or "inplace" in kwargs:
+                raise TypeError(
+                    "GeoDataFrame.set_crs() received duplicate positional and keyword arguments"
+                )
+            if len(args) == 3 and "allow_override" in kwargs:
+                raise TypeError(
+                    "GeoDataFrame.set_crs() got multiple values for 'allow_override'"
+                )
+
+            legacy_allow_override = (
+                args[2] if len(args) == 3 else kwargs.pop("allow_override", True)
+            )
+            warnings.warn(
+                "Passing 'inplace' and 'allow_override' positionally follows "
+                "Sedona's former GeoDataFrame.set_crs signature and is "
+                "deprecated. Use keyword arguments instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            return method(
+                self,
+                crs=args[0],
+                inplace=args[1],
+                allow_override=legacy_allow_override,
+                **kwargs,
+            )
+
+        return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 def _normalize_dissolve_aggfunc(aggfunc):
@@ -736,8 +782,6 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             else:
                 # Updating the existing Spark column directly avoids index
                 # alignment, which would multiply rows for duplicate indexes.
-                from pyproj import CRS
-
                 normalized_crs = CRS.from_user_input(crs)
                 new_epsg = normalized_crs.to_epsg() or 0
                 geometry_field = with_crs_metadata(
@@ -1205,9 +1249,16 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
     @crs.setter
     def crs(self, value):
         # Since PySpark DataFrames are immutable, we can't modify in place, so we create the new GeoSeries and replace it.
-        self.geometry = self.geometry.set_crs(value)
+        self.geometry = self.geometry.set_crs(value, allow_override=True)
 
-    def set_crs(self, crs, inplace=False, allow_override=True):
+    @_support_legacy_set_crs_positionals
+    def set_crs(
+        self,
+        crs: Any | None = None,
+        epsg: int | None = None,
+        inplace: bool = False,
+        allow_override: bool = False,
+    ) -> GeoDataFrame:
         """
         Set the Coordinate Reference System (CRS) of the ``GeoDataFrame``.
 
@@ -1221,6 +1272,10 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         The underlying geometries are not transformed to this CRS. To
         transform the geometries to a new CRS, use the ``to_crs`` method.
 
+        A boolean second positional argument is interpreted as ``inplace``
+        for compatibility with the former Sedona signature. This form is
+        deprecated; use keyword arguments instead.
+
         Parameters
         ----------
         crs : pyproj.CRS | None, optional
@@ -1233,11 +1288,17 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             If True, the CRS of the GeoDataFrame will be changed in place
             (while still returning the result) instead of making a copy of
             the GeoDataFrame.
-        allow_override : bool, default True
+        allow_override : bool, default False
             If the GeoDataFrame already has a CRS, allow to replace the
-            existing CRS, even when both are not equal. In Sedona, setting this to True
-            will lead to eager evaluation instead of lazy evaluation. Unlike Geopandas,
-            True is the default value in Sedona for performance reasons.
+            existing CRS, even when both are not equal. Validation uses column
+            metadata when available. Without it, validation performs a
+            distributed lookup of the first non-null geometry's SRID.
+
+        Returns
+        -------
+        GeoDataFrame
+            A new GeoDataFrame unless ``inplace=True``, in which case the
+            mutated original is returned.
 
         Examples
         --------
@@ -1283,14 +1344,13 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         --------
         GeoDataFrame.to_crs : re-project to another CRS
         """
-        # Since PySpark DataFrames are immutable, we can't modify in place, so we create the new GeoSeries and replace it.
-        new_geometry = self.geometry.set_crs(crs, allow_override=allow_override)
-        if inplace:
-            self.geometry = new_geometry
-        else:
-            df = self.copy()
-            df.geometry = new_geometry
-            return df
+        df = self if inplace else self.copy()
+        df.geometry = df.geometry.set_crs(
+            crs=crs,
+            epsg=epsg,
+            allow_override=allow_override,
+        )
+        return df
 
     def to_crs(
         self,
@@ -1384,6 +1444,35 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             df.geometry = new_geometry
             return df
 
+    def estimate_utm_crs(self, datum_name: str = "WGS 84") -> CRS:
+        """Return the estimated UTM CRS based on the bounds of the dataset.
+
+        .. versionadded:: 2.0.0
+
+        Parameters
+        ----------
+        datum_name : str, optional
+            The name of the datum to use in the query. Default is ``"WGS 84"``.
+
+        Returns
+        -------
+        pyproj.CRS
+            The UTM coordinate reference system covering the center of the
+            active geometry column's bounds.
+
+        Notes
+        -----
+        Bounds are computed with one distributed aggregation. Only its four
+        aggregate values are materialized on the driver; geometry rows are not
+        collected.
+
+        See Also
+        --------
+        GeoDataFrame.to_crs
+        GeoSeries.estimate_utm_crs
+        """
+        return self.geometry.estimate_utm_crs(datum_name=datum_name)
+
     @classmethod
     def from_dict(
         cls,
@@ -1448,7 +1537,8 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             columns. This can be used to control the behavior of the conversion of the
             non-geometry columns to a pandas DataFrame. For example, you can use this
             to control the dtype conversion of the columns. By default, the `to_pandas`
-            method is called with no additional arguments.
+            method is called with no additional arguments. Requires GeoPandas 1.1 or
+            newer when provided.
 
         Returns
         -------
@@ -1477,12 +1567,13 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         1    POLYGON ((0 0, 1 1, 0 1, 0 0))    2      b
         2      LINESTRING (0 0, -1 1, 0 -1)    3      c
         """
-        if to_pandas_kwargs is None:
-            to_pandas_kwargs = {}
+        kwargs: dict[str, Any] = {"geometry": geometry}
+        if to_pandas_kwargs is not None:
+            if parse_version(gpd.__version__) < parse_version("1.1.0"):
+                raise NotImplementedError("to_pandas_kwargs requires GeoPandas >= 1.1")
+            kwargs["to_pandas_kwargs"] = to_pandas_kwargs
 
-        gpd_df = gpd.GeoDataFrame.from_arrow(
-            table, geometry=geometry, **to_pandas_kwargs
-        )
+        gpd_df = gpd.GeoDataFrame.from_arrow(table, **kwargs)
         return GeoDataFrame(gpd_df)
 
     def to_json(
@@ -1951,6 +2042,109 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         """
         return self.to_geopandas().plot(*args, **kwargs)
 
+    def explode(
+        self,
+        column=None,
+        ignore_index: bool = False,
+        index_parts: bool = False,
+        **kwargs,
+    ) -> GeoDataFrame:
+        """Explode multi-part geometries into separate rows.
+
+        Attribute columns remain alongside every geometry part. The operation
+        uses Sedona's native ``ST_Dump`` expression and remains distributed.
+        Preserving row and part order while rebuilding the distributed index
+        requires a global sort and shuffle.
+
+        Parameters
+        ----------
+        column : column label, default None
+            Column to explode. ``None`` selects the active geometry column. As
+            in GeoPandas, selecting any geometry-typed column explodes the
+            active geometry column; selecting a non-geometry column delegates
+            to pandas-on-Spark.
+        ignore_index : bool, default False
+            If True, label the result index 0, 1, ..., n - 1 and ignore
+            ``index_parts``.
+        index_parts : bool, default False
+            If True, append a zero-based index level identifying each geometry
+            produced from an input row. Ignored when exploding a non-geometry
+            column, matching GeoPandas.
+        **kwargs
+            Additional keyword arguments are forwarded when exploding a
+            non-geometry column.
+
+        Returns
+        -------
+        GeoDataFrame
+            A distributed GeoDataFrame with one row per geometry part.
+
+        Examples
+        --------
+        >>> from sedona.spark.geopandas import GeoDataFrame
+        >>> from shapely.geometry import MultiPoint
+        >>> gdf = GeoDataFrame(
+        ...     {
+        ...         "name": ["a", "b"],
+        ...         "geometry": [
+        ...             MultiPoint([(0, 0), (1, 1)]),
+        ...             MultiPoint([(2, 2), (3, 3)]),
+        ...         ],
+        ...     }
+        ... )
+        >>> gdf.explode(index_parts=True)
+            name     geometry
+        0 0    a  POINT (0 0)
+          1    a  POINT (1 1)
+        1 0    b  POINT (2 2)
+          1    b  POINT (3 3)
+        """
+        if column is None:
+            column = self.geometry.name
+
+        selected = self[column]
+        if not isinstance(selected, sgpd.GeoSeries):
+            exploded = super().explode(
+                column,
+                ignore_index=ignore_index,
+                **kwargs,
+            )
+            return _as_geodataframe_with_geometry(
+                exploded,
+                self._geometry_column_name,
+            )
+
+        # GeoPandas explodes the active geometry even when ``column`` names a
+        # different geometry-typed column. Preserve that compatibility quirk.
+        geometry_label = self.geometry._column_label
+        geometry_position = self._internal.column_labels.index(geometry_label)
+        result_internal = expand_geometry_column(
+            self._internal,
+            geometry_position=geometry_position,
+            array_builder=stf.ST_Dump,
+            ignore_index=ignore_index,
+            index_parts=index_parts,
+            temp_prefix="frame_explode",
+        )
+        # GeoPandas rebuilds a geometry explode by dropping the active column
+        # and adding it back after the attributes, so keep that output order.
+        data_order = [
+            position
+            for position in range(len(result_internal.column_labels))
+            if position != geometry_position
+        ] + [geometry_position]
+        result_internal = result_internal.copy(
+            column_labels=[result_internal.column_labels[i] for i in data_order],
+            data_spark_columns=[
+                result_internal.data_spark_columns[i] for i in data_order
+            ],
+            data_fields=[result_internal.data_fields[i] for i in data_order],
+        )
+        return _as_geodataframe_with_geometry(
+            PandasOnSparkDataFrame(result_internal),
+            self._geometry_column_name,
+        )
+
     def dissolve(
         self,
         by=None,
@@ -2340,6 +2534,49 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
     # ============================================================================
     # SPATIAL OPERATIONS
     # ============================================================================
+
+    def overlay(
+        self,
+        right,
+        how="intersection",
+        keep_geom_type=None,
+        make_valid=True,
+    ):
+        """Perform a distributed spatial overlay with another GeoDataFrame.
+
+        Parameters
+        ----------
+        right : GeoDataFrame
+            The GeoDataFrame overlaid with this frame.
+        how : {"intersection", "union", "identity", "symmetric_difference", "difference"}
+            Overlay operation to perform.
+        keep_geom_type : bool, default None
+            Keep only geometries in the family of this frame. ``None`` filters
+            like ``True`` without eagerly evaluating the result to emit
+            GeoPandas' conditional dropped-geometry warning.
+        make_valid : bool, default True
+            Repair invalid polygon inputs before overlay.
+
+        Returns
+        -------
+        GeoDataFrame
+            Distributed overlay result. Constructing it eagerly runs one
+            distributed validation and metadata aggregation over both inputs;
+            overlay geometry rows remain lazily evaluated.
+
+        See Also
+        --------
+        sedona.spark.geopandas.overlay
+        """
+        from sedona.spark.geopandas.tools.overlay import overlay
+
+        return overlay(
+            self,
+            right,
+            how=how,
+            keep_geom_type=keep_geom_type,
+            make_valid=make_valid,
+        )
 
     def sjoin(
         self,

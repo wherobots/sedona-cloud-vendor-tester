@@ -238,6 +238,7 @@ These functions compute results arising from the overlay of two geometries. Thes
 | :--- | :--- |
 | [ST_Difference](Overlay-Functions/ST_Difference.md) | Return the difference between geometry A and B (return part of geometry A that does not intersect geometry B) |
 | [ST_Intersection](Overlay-Functions/ST_Intersection.md) | Return the intersection geometry of A and B |
+| [ST_SharedPaths](Overlay-Functions/ST_SharedPaths.md) | Returns the paths shared by two lineal geometries, grouped by traversal direction. |
 | [ST_Split](Overlay-Functions/ST_Split.md) | Split an input geometry by another geometry (called the blade). Linear (LineString or MultiLineString) geometry can be split by a Point, MultiPoint, LineString, MultiLineString, Polygon, or MultiPo... |
 | [ST_SubDivide](Overlay-Functions/ST_SubDivide.md) | Returns a multi-geometry divided based of given maximum number of vertices. |
 | [ST_SubDivideExplode](Overlay-Functions/ST_SubDivideExplode.md) | It works the same as ST_SubDivide but returns new rows with geometries instead of a multi-geometry. |
@@ -319,7 +320,7 @@ These functions produce or operate on bounding boxes and compute extent values.
 
 ## Spatial Indexing
 
-These functions work with spatial indexing systems including Bing Tiles, H3, S2, and GeoHash.
+These functions work with spatial indexing systems including Bing Tiles, Hilbert curves, S2, and GeoHash.
 
 | Function | Description |
 | :--- | :--- |
@@ -334,4 +335,5 @@ These functions work with spatial indexing systems including Bing Tiles, H3, S2,
 | [ST_BingTileZoomLevel](Spatial-Indexing/ST_BingTileZoomLevel.md) | Returns the zoom level of the Bing Tile identified by the given quadkey. |
 | [ST_GeoHashNeighbor](Spatial-Indexing/ST_GeoHashNeighbor.md) | Returns the neighbor geohash cell in the given direction. Valid directions are: `n`, `ne`, `e`, `se`, `s`, `sw`, `w`, `nw` (case-insensitive). |
 | [ST_GeoHashNeighbors](Spatial-Indexing/ST_GeoHashNeighbors.md) | Returns the 8 neighboring geohash cells of a given geohash string. The result is an array of 8 geohash strings in the order: N, NE, E, SE, S, SW, W, NW. |
+| [ST_HilbertDistance](Spatial-Indexing/ST_HilbertDistance.md) | Maps the midpoint of a geometry's envelope to an unsigned Hilbert-curve address within a supplied extent. |
 | [ST_S2CellIDs](Spatial-Indexing/ST_S2CellIDs.md) | Cover the geometry with Google S2 Cells, return the corresponding cell IDs with the given level. The level indicates the [size of cells](https://s2geometry.io/resources/s2cell_statistics.html). With... |

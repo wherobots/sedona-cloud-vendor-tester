@@ -244,9 +244,10 @@ contains_result = left_df.sjoin(right_df, predicate="contains")
 Transform geometries between different coordinate reference systems:
 
 ```python
-# Set initial CRS
+# GeoParquet normally preserves CRS metadata. Assign it only when absent.
 buildings = gpd.read_parquet("buildings.parquet")
-buildings = buildings.set_crs("EPSG:4326")
+if buildings.crs is None:
+    buildings = buildings.set_crs("EPSG:4326")
 
 # Transform to projected CRS for area calculations
 buildings_projected = buildings.to_crs("EPSG:3857")
@@ -311,6 +312,7 @@ The GeoPandas API for Apache Sedona implements the most commonly used GeoSeries 
 - `sjoin()` - Spatial joins with various predicates
 - `cx` - Coordinate-based spatial filtering
 - `clip()` - Clip geometries with scalar, rectangular, or distributed masks
+- `overlay()` - Distributed frame overlay with all five GeoPandas modes
 - `buffer()` - Geometric buffering
 - `distance()` - Distance calculations
 - `intersects()`, `contains()`, `within()` - Spatial predicates
@@ -329,6 +331,8 @@ The GeoPandas API for Apache Sedona implements the most commonly used GeoSeries 
 - `centroid`, `envelope`, `boundary` - Geometric properties
 - `x`, `y`, `z`, `has_z` - Coordinate access
 - `total_bounds`, `estimate_utm_crs` - Bounds and CRS utilities
+- `hilbert_distance()` - Distributed spatial-ordering keys based on geometry
+  envelope midpoints
 
 ### Spatial Operations
 
@@ -339,9 +343,58 @@ The GeoPandas API for Apache Sedona implements the most commonly used GeoSeries 
 - `make_valid()` - Geometry validation and repair
 - `sample_points()` - Sample polygons by area and lines by length with native
   distributed expressions
+- `GeoSeries.explode()` and `GeoDataFrame.explode()` - Expand multipart
+  geometries into rows, with the frame method retaining attribute columns
 - `cx` - Coordinate-based spatial filtering
 - `clip()` - Distributed geometry clipping
+- `overlay()` - Distributed intersection, difference, identity, symmetric
+  difference, and union between GeoDataFrames
 - `sindex` - Spatial indexing (limited functionality)
+
+`hilbert_distance()` keeps its per-row ordering keys distributed and uses only
+native Spark expressions. When `total_bounds` is omitted, one distributed
+aggregation derives the extent of all envelope midpoints; only that bounded
+summary reaches the driver. Spark returns the GeoPandas-compatible unsigned
+32-bit values in an `int64` Series because Spark has no unsigned integer type.
+
+`overlay()` keeps both inputs distributed. Candidate pairs are planned as a
+Sedona spatial join, and difference branches aggregate each source row's
+matching mask geometries on executors. It does not collect geometry rows,
+create Python UDFs, or cache an intermediate pair relation. Constructing the
+result first runs one eager, distributed validation and metadata aggregation
+over both complete input lineages; only the bounded summary reaches the
+driver, while overlay geometry rows remain lazy. Composite modes deliberately
+execute more than one spatial join instead of implicitly persisting a
+potentially large candidate-pair relation, trading recomputation for avoiding
+hidden cache memory and lifecycle costs. Output row order is not guaranteed.
+
+As in GeoPandas, each input must contain a single basic geometry family and
+invalid polygon inputs are repaired by default. JTS and GEOS can return
+different component or coordinate orderings for topologically equivalent
+results. Sedona's JTS structural repair can partition invalid polygons
+differently from GeoPandas' GEOS linework repair; valid-input topology should
+match. `keep_geom_type=None` filters like `True`, but Sedona does not eagerly
+execute the completed overlay solely to issue GeoPandas' conditional warning
+when lower-dimensional geometries are removed. MultiIndex columns, duplicate
+one-level column labels, and attribute suffixes that would create duplicate
+output labels are rejected. Input row indexes, including MultiIndexes, are
+discarded in favor of a fresh distributed index. Non-`difference` modes
+consistently name the active output column `geometry`, including empty and
+spatially disjoint results; this avoids GeoPandas' special bbox-fast-path
+naming behavior. An empty left input returns a typed empty result instead of
+raising in modes where some GeoPandas versions access its first geometry.
+`identity` follows GeoPandas 1.1+ dtype semantics by preserving left-side
+attribute dtypes and promoting nullable right-side attributes. `union` and
+`symmetric_difference` use stable nullable attribute dtypes even when a
+logical difference branch produces no rows, avoiding an eager action solely
+to specialize dtypes.
+
+`GeoSeries.explode()` and `GeoDataFrame.explode()` use Sedona's native
+`ST_Dump` expression with Spark `posexplode`. Geometry parts and frame
+attributes remain distributed; neither operation collects source rows or uses
+a Python UDF. Preserving GeoPandas row and part ordering and rebuilding the
+distributed index requires a global sort and shuffle. For `GeoDataFrame`, the
+retained attribute columns participate in that shuffle.
 
 ### Distributed Geometry Aggregation
 
@@ -421,8 +474,9 @@ overture_path = DATA_DIR + overture_size + "/" + "overture-buildings/"
 postal_codes = gpd.read_parquet(postal_codes_path)
 buildings = gpd.read_parquet(overture_path)
 
-# Spatial analysis
-buildings = buildings.set_crs("EPSG:4326")
+# Spatial analysis (GeoParquet normally preserves CRS metadata)
+if buildings.crs is None:
+    buildings = buildings.set_crs("EPSG:4326")
 buildings_projected = buildings.to_crs("EPSG:3857")
 
 # Calculate areas and filter
