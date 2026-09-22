@@ -30,6 +30,8 @@ Since `v1.5.1`, this function supports the ability to replace the current no-dat
 
     To use this for no-data replacement, the input raster must first set its no-data value, which can then be selectively replaced via this function.
 
+    `noDataValue` must be non-null when using the `replace` variant; to remove a no data value, use the 2 or 3 argument form.
+
 Format:
 
 ```
@@ -59,4 +61,23 @@ Output:
 
 ```
 -999
+```
+
+SQL Example
+
+`NaN` can be used as the no data value of a floating point band. Every `NaN` pixel then counts as no data. Setting `NaN` on an integer band throws an `IllegalArgumentException`.
+
+```sql
+SELECT RS_BandNoDataValue(
+        RS_SetBandNoDataValue(
+            RS_MakeEmptyRaster(1, 'F', 20, 20, 2, 22, 1),
+            double('NaN')
+            )
+        )
+```
+
+Output:
+
+```
+NaN
 ```

@@ -29,6 +29,7 @@ import geopandas as gpd
 import pandas as pd
 import pyspark.pandas as pspd
 import sedona.spark.geopandas as sgpd
+from shapely.geometry.base import BaseGeometry
 from packaging.version import parse as parse_version
 from pyproj import CRS
 from pyspark.pandas import Series as PandasOnSparkSeries
@@ -51,13 +52,18 @@ from pyspark.sql.types import (
     FloatType,
     IntegerType,
     LongType,
+    NullType,
     NumericType,
     ShortType,
     StringType,
 )
 from pyspark.pandas.utils import log_advice
 
-from sedona.spark.geopandas._crs import copy_crs_metadata, with_crs_metadata
+from sedona.spark.geopandas._crs import (
+    copy_crs_metadata,
+    read_crs_metadata,
+    with_crs_metadata,
+)
 from sedona.spark.geopandas._explode import expand_geometry_column
 from sedona.spark.geopandas._typing import Label
 from sedona.spark.geopandas.base import GeoFrame
@@ -708,8 +714,32 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         from sedona.spark.geopandas import GeoSeries
         from pyspark.sql import DataFrame as SparkDataFrame
 
+        local_geometry_crs: dict[int, Any | None] = {}
+
+        # Data built from a Python-native structure (dict, list of records,
+        # pandas/geopandas DataFrame, ...) is locally owned: we can safely
+        # record an authoritative "no CRS" state for its geometry column
+        # below when the caller didn't pass one. Wrapping an existing Sedona
+        # or raw distributed structure instead inherits whatever CRS state it
+        # already had.
+        is_locally_owned = not isinstance(
+            data,
+            (
+                GeoDataFrame,
+                GeoSeries,
+                PandasOnSparkDataFrame,
+                SparkDataFrame,
+                PandasOnSparkSeries,
+            ),
+        )
+        geometry_input = geometry
+        distributed_geometry = isinstance(
+            geometry,
+            (GeoSeries, PandasOnSparkSeries),
+        )
+
         if isinstance(data, (GeoDataFrame, GeoSeries)):
-            if crs:
+            if crs is not None:
                 data.crs = crs
 
             # For each of these super().__init__() calls, we let pyspark decide which inputs are valid or not
@@ -733,11 +763,11 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             if isinstance(data, gpd.GeoDataFrame):
                 # We can use GeoDataFrame.active_geometry_name once we drop support for geopandas < 1.0.0.
                 # Below is the equivalent, since active_geometry_name simply calls _geometry_column_name.
-                if data._geometry_column_name:
+                if data._geometry_column_name is not None:
                     # GeoPandas stores CRS as metadata instead of inside shapely objects, so we must save it and set it manually later.
-                    if not crs:
+                    if crs is None:
                         crs = data.crs
-                    if not geometry:
+                    if geometry is None:
                         geometry = data.geometry.name
 
             pd_df = pd.DataFrame(
@@ -750,6 +780,18 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
 
             # Spark complains if it's left as a geometry type.
             geom_type_cols = pd_df.select_dtypes(include=["geometry"]).columns
+            # GeoPandas stores one CRS on each GeometryArray. Converting those
+            # arrays to object dtype below is required for Spark, but would
+            # discard that per-column state unless it is captured first.
+            local_geometry_crs = {
+                position: getattr(pd_df.iloc[:, position].array, "crs", None)
+                for position, column_dtype in enumerate(pd_df.dtypes)
+                if isinstance(column_dtype, GeometryDtype)
+            }
+            if not copy and len(geom_type_cols):
+                # pandas 1.5 may share geometry blocks with caller-owned
+                # inputs. Detach before casting so they cannot be mutated.
+                pd_df = pd_df.copy()
             pd_df[geom_type_cols] = pd_df[geom_type_cols].astype(object)
 
             # Initialize the parent class pyspark DataFrame with the pandas DataFrame.
@@ -766,7 +808,7 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             if crs is not None and data.crs != crs:
                 raise ValueError(crs_mismatch_error)
 
-        if geometry:
+        if geometry is not None:
             existing_geometry = None
             if crs is not None and pd.api.types.is_hashable(geometry):
                 try:
@@ -823,11 +865,47 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             # No need to call set_geometry() here since it's already part of the df, just set the name.
             self._geometry_column_name = "geometry"
 
-        if geometry is None and crs:
+        if geometry is None and crs is not None:
             raise ValueError(
                 "Assigning CRS to a GeoDataFrame without a geometry column is not "
                 "supported. Supply geometry using the 'geometry=' keyword argument, "
                 "or by providing a DataFrame with column name 'geometry'",
+            )
+
+        if is_locally_owned:
+            active_position = self._active_geometry_position()
+            if active_position is not None:
+                active_field = self._internal.data_fields[active_position]
+
+                # An explicitly supplied CRS applies to the active geometry.
+                # For an array-like geometry argument, set_geometry() has
+                # already normalized and copied its own CRS metadata, so that
+                # state takes precedence over a column it may have replaced.
+                if crs is not None:
+                    local_geometry_crs[active_position] = crs
+                elif geometry_input is not None and not pd.api.types.is_hashable(
+                    geometry_input
+                ):
+                    has_metadata, active_crs = read_crs_metadata(active_field)
+                    if has_metadata:
+                        local_geometry_crs[active_position] = active_crs
+                elif (
+                    isinstance(active_field.spark_type, NullType)
+                    and not distributed_geometry
+                ):
+                    # A local active all-null column cannot be recognized as a
+                    # GeometryType by Spark, but its role as the active
+                    # geometry still makes its no-CRS state authoritative.
+                    local_geometry_crs.setdefault(active_position, None)
+
+            unknown_positions = (
+                {active_position}
+                if distributed_geometry and active_position is not None
+                else set()
+            )
+            self._set_local_geometry_crs_metadata(
+                local_geometry_crs,
+                unknown_positions=unknown_positions,
             )
 
     # ============================================================================
@@ -1000,7 +1078,11 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
                 else:
                     level = col.rename(geo_column_name)
             else:
-                level = pspd.Series(col, name=geo_column_name)
+                # Construct directly from the local array-like data (rather than
+                # pre-wrapping into a bare pspd.Series) so GeoSeries.__init__ can
+                # tell this is locally owned data and record authoritative
+                # no-CRS metadata below when 'crs' isn't given.
+                level = sgpd.GeoSeries(col, name=geo_column_name)
 
             if not isinstance(level, sgpd.GeoSeries):
                 # Set the crs later, so we can allow_override=True
@@ -1051,14 +1133,38 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
 
         # This operation throws a warning to the user asking them to set pspd.set_option('compute.ops_on_diff_frames', True)
         # to allow operations on different frames. We pass these warnings on to the user so they must manually set it themselves.
-        if crs:
+        if crs is not None:
             level.set_crs(crs, inplace=True, allow_override=True)
             new_series = True
 
         frame._geometry_column_name = geo_column_name
         if new_series:
-            # Note: This casts GeoSeries back into pspd.Series, so we lose any metadata that's not serialized.
+            # Assignment casts GeoSeries back into pspd.Series and can drop
+            # custom field metadata. Restore only the CRS marker from the
+            # normalized source Series on the assigned column.
             frame[geo_column_name] = level
+            assigned_geometry = frame[geo_column_name]
+            if isinstance(assigned_geometry, sgpd.GeoSeries):
+                frame._update_geometry_field(
+                    assigned_geometry,
+                    copy_crs_metadata(
+                        level._internal.data_fields[0],
+                        assigned_geometry._internal.data_fields[0],
+                    ),
+                )
+        elif isinstance(level, sgpd.GeoSeries) and isinstance(
+            level.spark.data_type, NullType
+        ):
+            # An all-null selected column has no geometry bytes from which an
+            # SRID could be inferred. Once selected as geometry, missing CRS
+            # metadata therefore means authoritative no-CRS.
+            level_field = level._internal.data_fields[0]
+            has_crs_metadata, _ = read_crs_metadata(level_field)
+            if not has_crs_metadata:
+                frame._update_geometry_field(
+                    level,
+                    with_crs_metadata(level_field, None),
+                )
 
         if not inplace:
             return frame
@@ -1481,13 +1587,195 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
         crs: Any | None = None,
         **kwargs,
     ) -> GeoDataFrame:
-        raise NotImplementedError("from_dict() is not implemented yet.")
+        """Construct a GeoDataFrame from a dictionary.
+
+        .. versionadded:: 2.0.0
+
+        Parameters
+        ----------
+        data : dict
+            Dictionary of the form ``{field: array-like}`` or
+            ``{field: dict}``.
+        geometry : str or array-like, optional
+            If a string, the column to use as the active geometry. If an
+            array-like, it is added as the ``"geometry"`` column.
+        crs : str, dict, pyproj.CRS, optional
+            Coordinate reference system to assign to the resulting frame. The
+            coordinates are not transformed.
+        **kwargs
+            Additional arguments passed to :meth:`pandas.DataFrame.from_dict`,
+            such as ``orient`` or ``columns``.
+
+        Returns
+        -------
+        GeoDataFrame
+
+        Notes
+        -----
+        This constructor first materializes the dictionary in a local
+        GeoPandas GeoDataFrame on the driver, then distributes it with Spark.
+        It is intended for small in-memory inputs. For large datasets, create
+        a Spark DataFrame or use a distributed Sedona data source instead.
+
+        Once distributed, dictionary values follow Spark schema inference.
+        Each column must contain values that Spark can represent with one
+        compatible type.
+
+        Examples
+        --------
+        >>> from shapely.geometry import Point
+        >>> from sedona.spark.geopandas import GeoDataFrame
+        >>> data = {
+        ...     "name": ["first", "second"],
+        ...     "geometry": [Point(1, 2), Point(2, 1)],
+        ... }
+        >>> GeoDataFrame.from_dict(data, crs="EPSG:4326")
+             name     geometry
+        0   first  POINT (1 2)
+        1  second  POINT (2 1)
+        """
+        local = gpd.GeoDataFrame.from_dict(
+            data,
+            geometry=geometry,
+            crs=crs,
+            **kwargs,
+        )
+        return cls._from_local_geopandas(local)
+
+    @classmethod
+    def _from_local_geopandas(cls, local: gpd.GeoDataFrame) -> GeoDataFrame:
+        """Distribute a locally constructed GeoPandas frame safely."""
+        geometry_name = local._geometry_column_name
+        restore_order_column = None
+
+        # Spark 3 pandas-on-Spark only checks the first object value when
+        # looking for a user-defined type. Give every geometry column that has
+        # a value a representative in a temporary first row, then remove it
+        # and restore the original positional order.
+        if len(local) > 0:
+            inference_values = {}
+            for position, dtype in enumerate(local.dtypes):
+                if not isinstance(
+                    dtype, GeometryDtype
+                ) and not pd.api.types.is_object_dtype(dtype):
+                    continue
+                missing = local.iloc[:, position].isna().to_numpy()
+                non_missing = np.flatnonzero(~missing)
+                if missing[0] and len(non_missing) > 0:
+                    value = local.iloc[non_missing[0], position]
+                    if isinstance(dtype, GeometryDtype) or isinstance(
+                        value, BaseGeometry
+                    ):
+                        inference_values[position] = value
+
+            if inference_values:
+                local = local.copy()
+
+                base_name = "__sedona_local_row_order__"
+                suffix = 0
+                while True:
+                    name = base_name if suffix == 0 else f"{base_name}_{suffix}"
+                    if isinstance(local.columns, pd.MultiIndex):
+                        candidate = (name,) + ("",) * (local.columns.nlevels - 1)
+                    else:
+                        candidate = name
+                    if candidate not in local.columns:
+                        restore_order_column = candidate
+                        break
+                    suffix += 1
+
+                local[restore_order_column] = np.arange(len(local))
+                inference_row = local.iloc[[0]].copy()
+                inference_row[restore_order_column] = -1
+                for position, value in inference_values.items():
+                    inference_row.iat[0, position] = value
+                local = pd.concat([inference_row, local])
+
+        # Avoid pandas 1.5 sharing geometry blocks with the local GeoDataFrame;
+        # the constructor casts those blocks to object dtype for Spark.
+        result = cls(local, copy=True)
+        if restore_order_column is not None:
+            result = result[result[restore_order_column] >= 0]
+            result.sort_values(restore_order_column, inplace=True)
+            result = cls(result.drop(columns=[restore_order_column]))
+            result._geometry_column_name = geometry_name
+        return result
 
     @classmethod
     def from_features(
-        cls, features, crs: Any | None = None, columns: Iterable[str] | None = None
+        cls,
+        features,
+        crs: Any | None = None,
+        columns: typing.Iterable[str] | None = None,
     ) -> GeoDataFrame:
-        raise NotImplementedError("from_features() is not implemented yet.")
+        """Construct a GeoDataFrame from GeoJSON-like features.
+
+        .. versionadded:: 2.0.0
+
+        Parameters
+        ----------
+        features
+            An iterable of feature mappings or objects implementing
+            ``__geo_interface__``; a FeatureCollection dictionary; or an object
+            whose ``__geo_interface__`` is a FeatureCollection.
+        crs : str, dict, pyproj.CRS, optional
+            Coordinate reference system to assign to the resulting frame. The
+            coordinates are not transformed.
+        columns : iterable of str, optional
+            Column names to include and their order in the resulting frame.
+
+        Returns
+        -------
+        GeoDataFrame
+
+        Notes
+        -----
+        This constructor first materializes all features in a local GeoPandas
+        GeoDataFrame on the driver. It is intended for small in-memory feature
+        collections. For large datasets, use Sedona's distributed GeoJSON or
+        GeoParquet Spark data source instead.
+
+        GeoPandas controls feature parsing and column selection; feature ``id``,
+        ``bbox``, and collection metadata are not added as columns. Once the
+        result is distributed, property values follow Spark schema inference:
+        nested mappings become structs, and columns with incompatible mixed
+        types are not supported.
+
+        Examples
+        --------
+        >>> from sedona.spark.geopandas import GeoDataFrame
+        >>> feature_collection = {
+        ...     "type": "FeatureCollection",
+        ...     "features": [
+        ...         {
+        ...             "type": "Feature",
+        ...             "properties": {"name": "first"},
+        ...             "geometry": {
+        ...                 "type": "Point",
+        ...                 "coordinates": (1.0, 2.0),
+        ...             },
+        ...         },
+        ...         {
+        ...             "type": "Feature",
+        ...             "properties": {"name": "second"},
+        ...             "geometry": {
+        ...                 "type": "Point",
+        ...                 "coordinates": (2.0, 1.0),
+        ...             },
+        ...         },
+        ...     ],
+        ... }
+        >>> GeoDataFrame.from_features(feature_collection)
+              geometry    name
+        0  POINT (1 2)   first
+        1  POINT (2 1)  second
+        """
+        local = gpd.GeoDataFrame.from_features(
+            features,
+            crs=crs,
+            columns=columns,
+        )
+        return cls._from_local_geopandas(local)
 
     @classmethod
     def from_postgis(
@@ -1719,6 +2007,134 @@ class GeoDataFrame(GeoFrame, pspd.DataFrame):
             data_fields=output_fields,
         )
         return PandasOnSparkDataFrame(result_internal)
+
+    def _active_geometry_position(self) -> int | None:
+        """Return the active geometry's physical data-column position."""
+        if self._geometry_column_name is None:
+            return None
+
+        try:
+            active_spark_name = self.geometry._internal.data_spark_column_names[0]
+        except (KeyError, MissingGeometryColumnError):
+            return None
+
+        try:
+            return self._internal.data_spark_column_names.index(active_spark_name)
+        except ValueError:
+            return None
+
+    def _update_geometry_field(
+        self,
+        geometry: sgpd.GeoSeries,
+        field: InternalField,
+        geometry_column: Column | None = None,
+    ) -> None:
+        """Replace one geometry field while preserving its public identity."""
+        geometry_column_name = geometry._internal.data_spark_column_names[0]
+        field = field.copy(name=geometry_column_name)
+        if geometry_column is None:
+            geometry_column = geometry.spark.column
+        self._update_internal_frame(
+            self._internal.with_new_spark_column(
+                geometry._column_label,
+                geometry_column.alias(
+                    geometry_column_name,
+                    metadata=field.metadata,
+                ),
+                field=field,
+            )
+        )
+
+    def _set_local_geometry_crs_metadata(
+        self,
+        column_crs: dict[int, Any | None],
+        *,
+        unknown_positions: set[int],
+    ) -> None:
+        """Restore authoritative per-column CRS state for local inputs.
+
+        ``column_crs`` is keyed by physical position because public labels can
+        be duplicated or multi-level. Membership records geometry provenance;
+        a value of ``None`` is therefore distinct from a non-geometry column.
+
+        All changes are made in one projection. Updating separately projected
+        Series would cross pandas-on-Spark anchors and could align on duplicate
+        indexes, multiplying rows.
+        """
+        internal = self._internal.resolved_copy
+
+        needs_update = False
+        output_columns = []
+        output_fields = []
+        for position, (spark_column, spark_name, field) in enumerate(
+            zip(
+                internal.data_spark_columns,
+                internal.data_spark_column_names,
+                internal.data_fields,
+            )
+        ):
+            has_crs_metadata, _ = read_crs_metadata(field)
+            if position in unknown_positions:
+                target_crs = None
+                should_update = False
+            elif position in column_crs:
+                target_crs = column_crs[position]
+                should_update = True
+            elif isinstance(field.spark_type, GeometryType) and not has_crs_metadata:
+                # GeometryType columns inferred from local Python objects have
+                # authoritative no-CRS provenance even without a GeometryArray.
+                target_crs = None
+                should_update = True
+            else:
+                target_crs = None
+                should_update = False
+
+            if should_update:
+                needs_update = True
+                if target_crs is not None:
+                    normalized_crs = CRS.from_user_input(target_crs)
+                    spark_column = stf.ST_SetSRID(
+                        spark_column,
+                        normalized_crs.to_epsg() or 0,
+                    )
+                field = with_crs_metadata(field, target_crs).copy(name=spark_name)
+                spark_column = spark_column.alias(spark_name, metadata=field.metadata)
+            output_columns.append(spark_column)
+            output_fields.append(field)
+
+        if not needs_update:
+            return
+
+        output_sdf = internal.spark_frame.select(
+            *[
+                scol_for(internal.spark_frame, name)
+                for name in internal.index_spark_column_names
+            ],
+            *output_columns,
+            scol_for(internal.spark_frame, NATURAL_ORDER_COLUMN_NAME),
+        )
+        output_schema = output_sdf.schema
+        output_fields = [
+            field.copy(
+                spark_type=output_schema[spark_name].dataType,
+                nullable=output_schema[spark_name].nullable,
+            )
+            for spark_name, field in zip(
+                internal.data_spark_column_names,
+                output_fields,
+            )
+        ]
+        result_internal = internal.copy(
+            spark_frame=output_sdf,
+            index_spark_columns=[
+                scol_for(output_sdf, name) for name in internal.index_spark_column_names
+            ],
+            data_spark_columns=[
+                scol_for(output_sdf, name) for name in internal.data_spark_column_names
+            ],
+            data_fields=output_fields,
+        )
+        self._update_internal_frame(result_internal)
 
     @staticmethod
     def _validate_serialization_kwargs(method_name: str, kwargs: dict) -> None:

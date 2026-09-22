@@ -345,6 +345,198 @@ class GeoFrame(metaclass=ABCMeta):
         """
         return _delegate_to_geometry_column("is_valid_reason", self)
 
+    def is_valid_coverage(self, *, gap_width=0.0):
+        """Return whether the geometry column forms a valid polygonal coverage.
+
+        A coverage is valid when polygon interiors do not overlap and shared
+        boundaries are edge-matched. Geometries without polygonal components
+        and missing geometries are ignored. A positive ``gap_width``
+        additionally detects narrow gaps up to that width.
+
+        Parameters
+        ----------
+        gap_width : float, default 0.0
+            Finite, non-negative maximum width of gaps to report as coverage
+            invalidities.
+
+        Returns
+        -------
+        bool
+            ``True`` when no invalid coverage edges are found.
+
+        Notes
+        -----
+        This method discovers and validates neighbouring polygons on Spark
+        executors, then reduces the invalid-edge results to one Python
+        ``bool``.
+
+        Examples
+        --------
+        >>> from shapely.geometry import box
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> coverage = GeoSeries([box(0, 0, 1, 1), box(1, 0, 2, 1)])
+        >>> coverage.is_valid_coverage()
+        True
+
+        Overlapping polygon interiors make a coverage invalid:
+
+        >>> overlapping = GeoSeries(
+        ...     [box(0, 0, 1, 1), box(0.5, 0, 1.5, 1)]
+        ... )
+        >>> overlapping.is_valid_coverage()
+        False
+
+        A positive gap width can also detect narrow gaps:
+
+        >>> separated = GeoSeries(
+        ...     [box(0, 0, 1, 1), box(1.1, 0, 2.1, 1)]
+        ... )
+        >>> separated.is_valid_coverage(gap_width=0.2)
+        False
+
+        See Also
+        --------
+        GeoSeries.invalid_coverage_edges : return invalid edges for each input
+            geometry
+        """
+        return _delegate_to_geometry_column(
+            "is_valid_coverage", self, gap_width=gap_width
+        )
+
+    def simplify_coverage(self, tolerance, *, simplify_boundary=True):
+        """Simplify an edge-matched polygonal coverage using distributed joins.
+
+        Shared boundary vertices are removed consistently from every incident
+        polygon. The operation evaluates Spark jobs eagerly until no further
+        edits are accepted, and returns a reusable, unnamed GeoSeries.
+
+        .. versionadded:: 2.0.0
+
+        Parameters
+        ----------
+        tolerance : float
+            Finite, non-negative scalar. A vertex is eligible when the area
+            of its triangle with its two neighbours is at most
+            ``tolerance ** 2``. Tolerance has the units of the coordinates;
+            it is not a bound on displacement. Zero can remove collinear
+            vertices. Per-row tolerances are not supported.
+        simplify_boundary : bool, default True
+            Whether the exterior boundary of the coverage can change. If
+            False, simplify only edges shared by two rings.
+
+        Returns
+        -------
+        GeoSeries
+            Simplified polygons with the original index levels, CRS and
+            embedded SRIDs. Missing and empty polygon rows are preserved.
+
+        Notes
+        -----
+        Requires Spark Classic and a checkpoint directory configured with
+        ``spark.sparkContext.setCheckpointDir(path)``. On a cluster, the path
+        must use storage accessible to all executors, such as HDFS. Local
+        filesystem paths are appropriate only for local Spark execution.
+        Intermediate checkpoints are released after their successors are
+        materialized. The final checkpoint must remain available while the
+        result or any derived DataFrame is in use. Its files follow Spark's
+        checkpoint cleanup policy; this method does not delete the configured
+        directory or require a public ``close()`` call.
+
+        Input must be a valid, finite, edge-matched 2D Polygon/MultiPolygon
+        coverage. Non-polygonal values, Z/M coordinates, invalid polygons and
+        repeated vertices within a ring (apart from closure) are rejected.
+        Empty interior rings are also rejected; empty polygons and empty
+        MultiPolygon members are preserved.
+        Full coverage validity is a precondition, not checked by this method;
+        use :meth:`is_valid_coverage` separately when needed.
+
+        The conservative algorithm uses current-segment safety checks and
+        disjoint edit regions, with at most one vertex removed per ring per
+        round. It can retain more vertices than GeoPandas/GEOS and never
+        deletes rings, holes or polygon parts. Results are not guaranteed to
+        match GeoPandas/GEOS vertex selection.
+
+        Geometry rows stay distributed, but reconstruction builds arrays per
+        ring and input geometry. Inputs above 100,000 coordinates per geometry
+        are rejected. This is an admission limit, not a memory guarantee:
+        long rings can exhaust executor memory even below that limit. Dense
+        spatial matches and many synchronization rounds can also be costly.
+
+        Examples
+        --------
+        >>> from sedona.spark import SedonaContext
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> from shapely.geometry import Polygon
+        >>> import tempfile
+        >>> spark = SedonaContext.create(
+        ...     SedonaContext.builder().master("local[2]").getOrCreate()
+        ... )
+        >>> spark.sparkContext.setCheckpointDir(tempfile.mkdtemp())
+        >>> polygons = GeoSeries([
+        ...     Polygon([(0, 0), (0.5, 0), (1, 0), (1, 1), (0, 1)])
+        ... ])
+        >>> polygons.simplify_coverage(0).count_coordinates().to_list()
+        [5]
+
+        See Also
+        --------
+        simplify : simplify each geometry independently
+        is_valid_coverage : check edge matching and coverage validity
+        """
+        return _delegate_to_geometry_column(
+            "simplify_coverage",
+            self,
+            tolerance=tolerance,
+            simplify_boundary=simplify_boundary,
+        )
+
+    def invalid_coverage_edges(self, *, gap_width=0.0):
+        """Return edges causing invalid polygonal coverage for each geometry.
+
+        The result preserves every input row and index level. Polygon candidate
+        neighbours are discovered with a native spatial join over envelopes
+        expanded by ``gap_width`` and aggregated on Spark executors; geometry
+        rows are not collected to the driver.
+
+        Parameters
+        ----------
+        gap_width : float, default 0.0
+            Finite, non-negative maximum width of gaps to report as coverage
+            invalidities.
+
+        Returns
+        -------
+        GeoSeries
+            Invalid ``LineString`` or ``MultiLineString`` edges for each input
+            geometry. Rows without invalid edges or polygonal components
+            contain an empty line, missing geometries remain missing, and the
+            returned GeoSeries is unnamed.
+
+        Notes
+        -----
+        Executor memory for an individual source row scales with the number of
+        polygon candidates whose envelopes fall within ``gap_width``.
+
+        Examples
+        --------
+        >>> from shapely.geometry import box
+        >>> from sedona.spark.geopandas import GeoSeries
+        >>> overlapping = GeoSeries(
+        ...     [box(0, 0, 1, 1), box(0.5, 0, 1.5, 1)]
+        ... )
+        >>> edges = overlapping.invalid_coverage_edges()
+        >>> edges.to_geopandas().is_empty.tolist()
+        [False, False]
+
+        See Also
+        --------
+        GeoSeries.is_valid_coverage : test whether the full geometry column is
+            a coverage
+        """
+        return _delegate_to_geometry_column(
+            "invalid_coverage_edges", self, gap_width=gap_width
+        )
+
     @property
     def is_empty(self):
         """

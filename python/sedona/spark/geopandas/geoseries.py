@@ -23,6 +23,7 @@ from typing import Any, Union, Literal, List
 
 import numpy as np
 import geopandas as gpd
+from geopandas.array import GeometryArray
 import sedona.spark.geopandas as sgpd
 import pandas as pd
 import pyspark.pandas as pspd
@@ -34,14 +35,20 @@ from pyspark.pandas.internal import InternalField, InternalFrame
 from pyspark.pandas.series import first_series
 from pyspark.pandas.utils import same_anchor, scol_for, verify_temp_column_name
 from pyspark.sql.types import (
+    ArrayType,
     BooleanType,
+    DataType,
+    DateType,
+    DecimalType,
     DoubleType,
     FloatType,
     IntegralType,
     LongType,
+    NumericType,
     NullType,
     StructField,
     StructType,
+    TimestampType,
 )
 from sedona.spark.sql.types import GeometryType
 
@@ -228,6 +235,71 @@ def _attach_ordered_sequence_column(
         sdf.orderBy(order_column),
         sequence_column,
     )
+
+
+def _fillna_index_columns_equal(
+    left: PySparkColumn,
+    right: PySparkColumn,
+    left_type: DataType,
+    right_type: DataType,
+    positional: bool,
+) -> PySparkColumn:
+    """Compare index keys without Spark's unrelated-type coercions."""
+    floating_types = (FloatType, DoubleType)
+    decimal_floating = (
+        isinstance(left_type, DecimalType) and isinstance(right_type, floating_types)
+    ) or (isinstance(left_type, floating_types) and isinstance(right_type, DecimalType))
+    both_numeric = (
+        isinstance(left_type, NumericType)
+        and isinstance(right_type, NumericType)
+        and not decimal_floating
+    )
+    temporal_types = (DateType, TimestampType)
+    both_temporal = isinstance(left_type, temporal_types) and isinstance(
+        right_type, temporal_types
+    )
+    boolean_numeric = (
+        isinstance(left_type, BooleanType) and isinstance(right_type, NumericType)
+    ) or (isinstance(left_type, NumericType) and isinstance(right_type, BooleanType))
+    # Spark's Decimal/float coercion can equate values that pandas keeps
+    # distinct, such as Decimal("0.1") and binary 0.1. Exact cross-type
+    # comparison is not available as a simple Catalyst expression, so keep
+    # those key families distinct.
+    #
+    # pandas treats boolean/numeric axes as equal positionally, but does not
+    # label-reindex between those types when their order differs.
+    if (
+        left_type == right_type
+        or both_numeric
+        or both_temporal
+        or (positional and boolean_numeric)
+    ):
+        return left.eqNullSafe(right)
+    # Missing labels can make otherwise incompatible axes positionally equal,
+    # but pandas does not label-reindex between those index families.
+    if positional:
+        return left.isNull() & right.isNull()
+    return F.lit(False)
+
+
+def _fillna_index_dtypes_can_equal(
+    left_dtype: Any,
+    right_dtype: Any,
+    left_type: DataType,
+    right_type: DataType,
+) -> bool:
+    """Whether pandas can consider two index dtypes positionally equal."""
+    if left_dtype == right_dtype:
+        return True
+
+    temporal_types = (DateType, TimestampType)
+    if isinstance(left_type, temporal_types) and isinstance(right_type, temporal_types):
+        return True
+
+    # NumPy-backed indexes use value equality across dtypes, including object-
+    # backed values such as Decimal. Pandas extension dtypes only compare equal
+    # when the dtypes themselves match, which the first branch handles.
+    return isinstance(left_dtype, np.dtype) and isinstance(right_dtype, np.dtype)
 
 
 def _dwithin_expression(
@@ -585,8 +657,26 @@ class GeoSeries(GeoFrame, pspd.Series):
         dtype: geometry
         """
         assert data is not None
-        if crs is None and isinstance(data, gpd.GeoSeries):
-            crs = data.crs
+        if crs is None:
+            if isinstance(data, gpd.GeoSeries):
+                crs = data.crs
+            elif isinstance(data, GeometryArray):
+                crs = data.crs
+            elif isinstance(data, pd.Series) and isinstance(
+                getattr(data, "array", None), GeometryArray
+            ):
+                crs = data.array.crs
+
+        # Locally owned data (a Python list, WKT/WKB, a plain pandas Series, a
+        # bare geopandas.GeoSeries, ...) is distinct from wrapping an existing
+        # Sedona-managed or raw distributed structure: only in the former case
+        # do we know, right now, whether a CRS is set, so only there do we
+        # need to record an authoritative "no CRS" state below when the user
+        # didn't pass one. Wrapping an existing structure just inherits
+        # whatever CRS state (known, known-absent, or unknown) it already had.
+        is_locally_owned = not isinstance(
+            data, (GeoDataFrame, GeoSeries, PandasOnSparkSeries, PandasOnSparkDataFrame)
+        )
 
         self._anchor: GeoDataFrame
         self._col_label: Label
@@ -647,8 +737,22 @@ class GeoSeries(GeoFrame, pspd.Series):
 
             pd_series = pd_series.astype(object)
 
-            # Initialize the parent class PySpark Series with the pandas Series.
-            super().__init__(data=pd_series)
+            if (
+                not pd_series.empty
+                and pd_series.isna().iloc[0]
+                and any(isinstance(value, BaseGeometry) for value in pd_series)
+            ):
+                # Spark 3.5 infers object UDTs from the first value. WKB lets
+                # leading missing values retain geometry type without reordering.
+                wkb_series = (
+                    gpd.GeoSeries(pd_series.where(pd_series.notna(), None))
+                    .to_wkb(include_srid=True)
+                    .rename(pd_series.name)
+                )
+                ps_series = pspd.Series(wkb_series).spark.transform(stc.ST_GeomFromWKB)
+                super().__init__(data=ps_series._anchor, index=ps_series._col_label)
+            else:
+                super().__init__(data=pd_series)
 
         # Ensure we're storing geometry types.
         if (
@@ -662,6 +766,26 @@ class GeoSeries(GeoFrame, pspd.Series):
 
         if crs is not None:
             self.set_crs(crs, inplace=True, allow_override=True)
+        elif is_locally_owned:
+            self._record_no_crs_metadata(inplace=True)
+
+    def _record_no_crs_metadata(self, inplace: bool = False) -> "GeoSeries":
+        """Record authoritative "no CRS" metadata without touching geometry bytes.
+
+        Unlike ``set_crs``, this never calls ``ST_SetSRID``, so any SRID
+        already embedded in the geometry (e.g. from WKB/EWKB input) survives
+        untouched even though the public ``.crs`` becomes authoritatively
+        ``None`` instead of falling back to a distributed SRID lookup.
+        """
+        result = self._query_geometry_column(
+            self.spark.column,
+            keep_name=True,
+            crs_override=None,
+        )
+        if inplace:
+            self._update_inplace(result, invalidate_sindex=False)
+            return self
+        return result
 
     def _is_empty(self) -> bool:
         """Check if this GeoSeries has no rows without triggering a full Spark scan."""
@@ -887,10 +1011,11 @@ class GeoSeries(GeoFrame, pspd.Series):
 
         df = self._internal.spark_frame if df is None else df
 
+        # Series names are arbitrary hashable Python objects (including
+        # falsy ones like 0 or ""), while Spark aliases must be strings.
+        # Keep the physical name fixed and carry the logical Series name in
+        # the rebuilt InternalFrame below, mirroring `_result_preserving_index`.
         rename = SPARK_DEFAULT_SERIES_NAME
-
-        if keep_name and self.name:
-            rename = self.name
 
         result_field = None
         if returns_geom:
@@ -941,12 +1066,13 @@ class GeoSeries(GeoFrame, pspd.Series):
                 nullable=schema_field.nullable,
             )
 
+        result_column_label = self._column_label if keep_name else None
         internal = self._internal.copy(
             spark_frame=sdf,
             index_fields=index_fields,
             index_spark_columns=index_spark_columns,
             index_names=index_names if index_spark_columns else [None],
-            column_labels=([(rename,)] if is_aggr else self._internal.column_labels),
+            column_labels=[result_column_label],
             data_spark_columns=[scol_for(sdf, rename)],
             data_fields=[
                 (
@@ -955,13 +1081,11 @@ class GeoSeries(GeoFrame, pspd.Series):
                     else InternalField.from_struct_field(sdf.schema[rename])
                 )
             ],
-            column_label_names=[(rename,)],
+            column_label_names=(
+                self._internal.column_label_names if keep_name else [None]
+            ),
         )
         ps_series = first_series(PandasOnSparkDataFrame(internal))
-
-        # Convert Spark series default name to pandas series default name (None) if needed.
-        series_name = None if rename == SPARK_DEFAULT_SERIES_NAME else rename
-        ps_series = ps_series.rename(series_name)
 
         return GeoSeries(ps_series) if returns_geom else ps_series
 
@@ -1028,9 +1152,6 @@ class GeoSeries(GeoFrame, pspd.Series):
 
     @property
     def sindex(self) -> SpatialIndex:
-        geometry_column = _get_series_col_name(self)
-        if geometry_column is None:
-            raise ValueError("No geometry column found in GeoSeries")
         if self._sindex is None:
             self._sindex = SpatialIndex(self)
         return self._sindex
@@ -1139,6 +1260,230 @@ class GeoSeries(GeoFrame, pspd.Series):
             spark_col,
             returns_geom=False,
         )
+
+    def _coverage_invalid_edges_frame(self, gap_width: float):
+        """Build the distributed per-row coverage-validation frame."""
+        source_internal = self._internal.resolved_copy
+        source_sdf = source_internal.spark_frame
+        geometry_name = "__coverage_geometry__"
+        polygonal_shape_name = "__coverage_polygonal_shape__"
+        target_geometry_name = "__coverage_target_geometry__"
+        target_shape_name = "__coverage_target_shape__"
+        neighbor_geometry_name = "__coverage_neighbor_geometry__"
+        neighbor_shape_name = "__coverage_neighbor_shape__"
+        neighbors_name = "__coverage_neighbors__"
+        gap_width_name = "__coverage_gap_width__"
+        diagnostic_edges_name = "__coverage_diagnostic_edges__"
+        invalid_edges_name = "__coverage_invalid_edges__"
+        index_names = [
+            f"__coverage_index_{level}__"
+            for level in range(len(source_internal.index_spark_columns))
+        ]
+
+        geometry_field = source_internal.data_fields[0]
+        geometry_source = source_sdf.select(
+            source_internal.data_spark_columns[0].alias(
+                geometry_name, metadata=geometry_field.metadata
+            )
+        )
+        source = source_sdf.select(
+            source_internal.data_spark_columns[0].alias(
+                geometry_name, metadata=geometry_field.metadata
+            ),
+            *[
+                index_column.alias(index_name)
+                for index_column, index_name in zip(
+                    source_internal.index_spark_columns, index_names
+                )
+            ],
+            scol_for(source_sdf, NATURAL_ORDER_COLUMN_NAME),
+        )
+
+        empty_neighbors = F.array().cast(ArrayType(GeometryType(), containsNull=False))
+        geometry = scol_for(geometry_source, geometry_name)
+        nonempty_source = geometry_source.where(
+            F.coalesce(
+                geometry.isNotNull() & ~stf.ST_IsEmpty(geometry),
+                F.lit(False),
+            )
+        )
+        # Flattening mixed-layout collection members directly can create an
+        # unserializable multipart geometry. Empty values are already excluded
+        # because their declared layouts cannot always be normalized. Only the 2D
+        # join shape is changed; the exact source value remains the key.
+        polygonal_source = nonempty_source.withColumn(
+            polygonal_shape_name,
+            stf.ST_CollectionExtract(
+                stf.ST_Force2D(scol_for(nonempty_source, geometry_name)), 3
+            ),
+        )
+        polygonal_shape = scol_for(polygonal_source, polygonal_shape_name)
+        active_source = polygonal_source.where(
+            F.coalesce(~stf.ST_IsEmpty(polygonal_shape), F.lit(False))
+        )
+
+        # Coverage diagnostics are a function of an exact represented geometry
+        # value and the multiset of physical candidate geometries. Validate each
+        # distinct target value once, but retain duplicates on the candidate side
+        # so duplicate coverage members remain observable as overlaps.
+        targets = active_source.select(
+            scol_for(active_source, geometry_name).alias(
+                target_geometry_name, metadata=geometry_field.metadata
+            ),
+            scol_for(active_source, polygonal_shape_name).alias(target_shape_name),
+        ).dropDuplicates([target_geometry_name])
+        candidates = active_source.select(
+            scol_for(active_source, geometry_name).alias(neighbor_geometry_name),
+            scol_for(active_source, polygonal_shape_name).alias(neighbor_shape_name),
+        )
+        target_geometry = scol_for(targets, target_geometry_name)
+        target_shape = scol_for(targets, target_shape_name)
+        neighbor_geometry = scol_for(candidates, neighbor_geometry_name)
+        neighbor_shape = scol_for(candidates, neighbor_shape_name)
+        spatial_condition = stp.ST_DWithin(
+            target_shape,
+            neighbor_shape,
+            gap_width,
+        )
+        pairs = targets.join(candidates, spatial_condition, "inner")
+
+        diagnostics = pairs.groupBy(target_geometry_name).agg(
+            F.collect_list(scol_for(pairs, neighbor_geometry_name)).alias(
+                neighbors_name
+            ),
+        )
+        diagnostics = diagnostics.withColumn(gap_width_name, F.lit(gap_width))
+        diagnostics = diagnostics.withColumn(
+            diagnostic_edges_name,
+            F.expr(
+                f"__sedona_internal_coverage_invalid_edges_for_target("
+                f"`{target_geometry_name}`, `{neighbors_name}`, `{gap_width_name}`)"
+            ),
+        ).select(
+            target_geometry_name,
+            diagnostic_edges_name,
+        )
+
+        # Join the geometry-keyed diagnostics onto one final evaluation of the
+        # source carrying index and ordering columns. Normal GeometryUDT equality
+        # compares the exact represented value and maps one diagnostic back to
+        # every physical duplicate row.
+        validation_rows = source.join(
+            diagnostics,
+            scol_for(source, geometry_name)
+            == scol_for(diagnostics, target_geometry_name),
+            "left",
+        )
+        validation_rows = validation_rows.withColumn(
+            neighbors_name, empty_neighbors
+        ).withColumn(gap_width_name, F.lit(gap_width))
+        unmatched_edges = F.expr(
+            f"__sedona_internal_coverage_invalid_edges_for_target("
+            f"`{geometry_name}`, `{neighbors_name}`, `{gap_width_name}`)"
+        )
+        validation_rows = validation_rows.withColumn(
+            invalid_edges_name,
+            F.when(
+                scol_for(validation_rows, target_geometry_name).isNotNull(),
+                scol_for(validation_rows, diagnostic_edges_name),
+            ).otherwise(unmatched_edges),
+        ).select(
+            invalid_edges_name,
+            *[scol_for(validation_rows, name) for name in index_names],
+            scol_for(validation_rows, NATURAL_ORDER_COLUMN_NAME),
+        )
+        # The spatial aggregation and lookup join do not preserve physical row
+        # order. Restore the represented pandas-on-Spark natural order before
+        # rebuilding the result. Project first so the sort does not shuffle
+        # the full candidate arrays.
+        validation_rows = validation_rows.orderBy(
+            scol_for(validation_rows, NATURAL_ORDER_COLUMN_NAME).asc_nulls_last()
+        )
+        return (
+            validation_rows,
+            scol_for(validation_rows, invalid_edges_name),
+            [scol_for(validation_rows, name) for name in index_names],
+            source_internal,
+        )
+
+    def simplify_coverage(self, tolerance, *, simplify_boundary=True) -> "GeoSeries":
+        from sedona.spark.geopandas._coverage import simplify_coverage
+
+        tolerance = _normalize_numeric_scalar(
+            tolerance, "'tolerance' must be a numeric scalar"
+        )
+        if tolerance < 0 or not np.isfinite(tolerance):
+            raise ValueError("'tolerance' must be finite and non-negative")
+        if not isinstance(simplify_boundary, (bool, np.bool_)):
+            raise TypeError("'simplify_boundary' must be a boolean")
+
+        source_internal = self._internal.resolved_copy
+        source_frame = source_internal.spark_frame
+        index_names = [
+            f"__coverage_index_{level}__"
+            for level in range(len(source_internal.index_spark_columns))
+        ]
+        source = source_frame.select(
+            source_internal.data_spark_columns[0].alias(
+                "geom", metadata=source_internal.data_fields[0].metadata
+            ),
+            *[
+                column.alias(name)
+                for column, name in zip(
+                    source_internal.index_spark_columns, index_names
+                )
+            ],
+            scol_for(source_frame, NATURAL_ORDER_COLUMN_NAME),
+            # Index labels and natural-order values can both be duplicated or
+            # null after alignment. The helper snapshots this physical ID
+            # before branching, so every original row has a stable identity.
+            F.monotonically_increasing_id().alias("id"),
+        )
+        result = simplify_coverage(source, tolerance, bool(simplify_boundary))
+        result = result.orderBy(
+            scol_for(result, NATURAL_ORDER_COLUMN_NAME).asc_nulls_last(),
+            scol_for(result, "id"),
+        )
+        return self._result_preserving_index(
+            scol_for(result, "geom"),
+            result,
+            [scol_for(result, name) for name in index_names],
+            source_internal.index_fields,
+            source_internal.index_names,
+            returns_geom=True,
+        )
+
+    def invalid_coverage_edges(self, *, gap_width=0.0) -> "GeoSeries":
+        gap_width = _normalize_numeric_scalar(
+            gap_width, "'gap_width' must be a numeric scalar"
+        )
+        if gap_width < 0 or not np.isfinite(gap_width):
+            raise ValueError("'gap_width' must be finite and non-negative")
+        frame, invalid_edges, index_columns, source_internal = (
+            self._coverage_invalid_edges_frame(gap_width)
+        )
+        return self._result_preserving_index(
+            invalid_edges,
+            frame,
+            index_columns,
+            source_internal.index_fields,
+            source_internal.index_names,
+            returns_geom=True,
+        )
+
+    def is_valid_coverage(self, *, gap_width=0.0) -> bool:
+        edges = self.invalid_coverage_edges(gap_width=gap_width)
+        frame = edges._internal.spark_frame
+        geometry = edges.spark.column
+        invalid = F.coalesce(
+            geometry.isNotNull() & ~stf.ST_IsEmpty(geometry), F.lit(False)
+        )
+        summary = frame.agg(
+            F.coalesce(F.max(invalid.cast("int")), F.lit(0)).alias(
+                "__coverage_has_invalid_edges__"
+            )
+        ).first()
+        return summary["__coverage_has_invalid_edges__"] == 0
 
     @property
     def is_empty(self) -> pspd.Series:
@@ -4049,7 +4394,11 @@ class GeoSeries(GeoFrame, pspd.Series):
         GeoDataFrame.to_file : Write a ``GeoDataFrame`` to a file.
         """
         df = sgpd.io.read_file(filename, format, **kwargs)
-        return GeoSeries(df.geometry, crs=df.crs)
+        # File-backed columns have distributed provenance. Until a reader
+        # exposes authoritative CRS field metadata, retain the unknown state
+        # so `.crs` can use the embedded-SRID fallback on demand rather than
+        # launching an eager aggregation during construction.
+        return GeoSeries(df.geometry)
 
     # GeoSeries-only (not in GeoDataFrame)
     @classmethod
@@ -4355,10 +4704,13 @@ class GeoSeries(GeoFrame, pspd.Series):
         name = kwargs.get("name", SPARK_DEFAULT_SERIES_NAME)
 
         if isinstance(data, pspd.Series):
-            spark_df = data._internal.spark_frame
+            # A public Series rename can remain a lazy alias in the InternalFrame.
+            # Resolve the Spark frame and its physical data-column name together.
+            data_internal = data._internal.resolved_copy
+            spark_df = data_internal.spark_frame
             assert len(schema) == 1
             spark_df = spark_df.withColumnRenamed(
-                _get_series_col_name(data), schema[0].name
+                data_internal.data_spark_column_names[0], schema[0].name
             )
         else:
             spark_df = default_session().createDataFrame(data, schema=schema)
@@ -4376,7 +4728,15 @@ class GeoSeries(GeoFrame, pspd.Series):
         ps_series = first_series(PandasOnSparkDataFrame(internal))
         name = None if name == SPARK_DEFAULT_SERIES_NAME else name
         ps_series.rename(name, inplace=True)
-        return GeoSeries(ps_series, index, crs=crs)
+        result = GeoSeries(ps_series, index, crs=crs)
+        if crs is None:
+            # WKT and ordinary WKB are generally SRID-less, though EWKB may
+            # carry an embedded SRID (ST_GeomFromWKB preserves it). Either
+            # way the caller passed no explicit crs, so the resulting column
+            # is authoritatively CRS-less rather than of unknown provenance;
+            # this is metadata-only and must not rewrite any embedded SRID.
+            result._record_no_crs_metadata(inplace=True)
+        return result
 
     # ============================================================================
     # DATA ACCESS AND MANIPULATION
@@ -4477,6 +4837,274 @@ class GeoSeries(GeoFrame, pspd.Series):
         """Alias for `notna` method. See `notna` for more detail."""
         return self.notna()
 
+    def _align_fillna_series(self, replacement: "GeoSeries"):
+        """Align to the exact left axis; callers restore natural row order."""
+        position = "__fillna_position__"
+        left_order = "__fillna_left_order__"
+        right_order = "__fillna_right_order__"
+        left_present = "__fillna_left_present__"
+        right_present = "__fillna_right_present__"
+        left_indexes = [
+            f"__fillna_left_index_{level}__"
+            for level in range(len(self._internal.index_spark_columns))
+        ]
+        right_indexes = [
+            f"__fillna_right_index_{level}__"
+            for level in range(len(replacement._internal.index_spark_columns))
+        ]
+
+        left_source = self._internal.spark_frame
+        if same_anchor(self, replacement):
+            aligned_frame = left_source.select(
+                self.spark.column.alias("L"),
+                replacement.spark.column.alias("R"),
+                *[
+                    column.alias(alias)
+                    for column, alias in zip(
+                        self._internal.index_spark_columns, left_indexes
+                    )
+                ],
+                scol_for(left_source, NATURAL_ORDER_COLUMN_NAME).alias(left_order),
+            )
+            aligned_frame = aligned_frame.withColumnRenamed(
+                left_order, NATURAL_ORDER_COLUMN_NAME
+            )
+            return aligned_frame, left_indexes
+
+        left_frame = left_source.select(
+            self.spark.column.alias("L"),
+            *[
+                column.alias(alias)
+                for column, alias in zip(
+                    self._internal.index_spark_columns, left_indexes
+                )
+            ],
+            scol_for(left_source, NATURAL_ORDER_COLUMN_NAME).alias(left_order),
+            F.lit(True).alias(left_present),
+        )
+        right_source = replacement._internal.spark_frame
+        right_frame = right_source.select(
+            replacement.spark.column.alias("R"),
+            *[
+                column.alias(alias)
+                for column, alias in zip(
+                    replacement._internal.index_spark_columns, right_indexes
+                )
+            ],
+            scol_for(right_source, NATURAL_ORDER_COLUMN_NAME).alias(right_order),
+            F.lit(True).alias(right_present),
+        )
+        left_index_types = [
+            left_frame.schema[column].dataType for column in left_indexes
+        ]
+        right_index_types = [
+            right_frame.schema[column].dataType for column in right_indexes
+        ]
+        index_dtypes_can_equal = all(
+            _fillna_index_dtypes_can_equal(
+                left_field.dtype,
+                right_field.dtype,
+                left_type,
+                right_type,
+            )
+            for left_field, right_field, left_type, right_type in zip(
+                self._internal.index_fields,
+                replacement._internal.index_fields,
+                left_index_types,
+                right_index_types,
+            )
+        )
+
+        same_index_structure = len(left_indexes) == len(right_indexes)
+        positioned_left = _attach_ordered_sequence_column(
+            left_frame, F.col(left_order), position
+        )
+        positioned_right = _attach_ordered_sequence_column(
+            right_frame, F.col(right_order), position
+        )
+        positional_join = positioned_left.join(
+            positioned_right,
+            on=position,
+            how="outer",
+        )
+
+        # Exact axes, including duplicate labels, pair positionally. Otherwise,
+        # GeoPandas reindexes a unique replacement onto the complete left key.
+        index_mismatch = F.col(left_present).isNull() | F.col(right_present).isNull()
+        for left_index, right_index, left_type, right_type in zip(
+            left_indexes,
+            right_indexes,
+            left_index_types,
+            right_index_types,
+        ):
+            index_mismatch = index_mismatch | ~_fillna_index_columns_equal(
+                F.col(left_index),
+                F.col(right_index),
+                left_type,
+                right_type,
+                positional=True,
+            )
+        # Both validation and filling consume this alignment. Hash the complete
+        # row so column pruning cannot give the consumers different exchanges;
+        # With spark.sql.exchange.reuse enabled (the default), Spark shares this
+        # shuffle within the query without a user-managed cache.
+        row = "__fillna_row__"
+        shared = positional_join.select(F.struct("*").alias(row)).repartition(row)
+        aligned = shared.select(f"{row}.*")
+        status = aligned.agg(
+            F.count(F.col(left_present)).alias("left_count"),
+            F.count(F.col(right_present)).alias("right_count"),
+            F.countDistinct(
+                F.when(
+                    F.col(right_present).isNotNull(),
+                    F.struct(*[F.col(column) for column in right_indexes]),
+                )
+            ).alias("right_unique_count"),
+            F.max(index_mismatch.cast("int")).alias("index_mismatch"),
+        )
+        axes_equal = "__fillna_axes_equal__"
+        invalid = "__fillna_invalid_index__"
+        status = status.withColumn(
+            axes_equal,
+            F.lit(same_index_structure and index_dtypes_can_equal)
+            & (F.col("left_count") == F.col("right_count"))
+            & (F.coalesce(F.col("index_mismatch"), F.lit(0)) == 0),
+        ).select(
+            F.col(axes_equal),
+            (
+                ~F.col(axes_equal)
+                & (F.col("right_count") != F.col("right_unique_count"))
+            ).alias(invalid),
+        )
+        # Join this single-row summary without broadcasting it: with AQE off,
+        # the broadcast timeout would also cover all upstream alignment work.
+        # The non-broadcast join buffers only its single right-hand row.
+        status = status.hint("SHUFFLE_REPLICATE_NL")
+        message = "GeoSeries.fillna: " + (
+            "cannot handle a non-unique multi-index!"
+            if len(right_indexes) > 1
+            else "cannot reindex on an axis with duplicate labels"
+        )
+        left = aligned.crossJoin(status).where(
+            # Keep validation in the row filter, including right-only rows, so
+            # it is not skipped for non-null geometries or an empty left axis.
+            F.when(F.col(invalid), F.raise_error(message).cast("boolean")).otherwise(
+                F.col(left_present).isNotNull()
+            )
+        )
+
+        if not same_index_structure:
+            # A flat Index and a MultiIndex have no complete keys in common.
+            aligned_frame = left.select(
+                F.col("L"),
+                stc.ST_GeomFromWKB(F.lit(None).cast("binary")).alias("R"),
+                *[F.col(column) for column in left_indexes],
+                F.col(left_order),
+            )
+        else:
+            # Exact axes use the positional value already in `left`. Only feed
+            # the label join when reindexing is needed, avoiding duplicate-label
+            # expansion on the exact-axis path.
+            right = aligned.crossJoin(status).where(
+                F.when(F.col(axes_equal) | F.col(invalid), F.lit(False)).otherwise(
+                    F.col(right_present).isNotNull()
+                )
+            )
+            left_alias = left.select(
+                "L", "R", *left_indexes, left_order, axes_equal
+            ).alias("left")
+            right_alias = right.select(
+                *[F.col(column).alias(column) for column in ["R", *right_indexes]]
+            ).alias("right")
+            join_condition = _fillna_index_columns_equal(
+                left_alias[left_indexes[0]],
+                right_alias[right_indexes[0]],
+                left_index_types[0],
+                right_index_types[0],
+                positional=False,
+            )
+            for left_index, right_index, left_type, right_type in zip(
+                left_indexes[1:],
+                right_indexes[1:],
+                left_index_types[1:],
+                right_index_types[1:],
+            ):
+                join_condition = join_condition & _fillna_index_columns_equal(
+                    left_alias[left_index],
+                    right_alias[right_index],
+                    left_type,
+                    right_type,
+                    positional=False,
+                )
+            aligned_frame = left_alias.join(
+                right_alias,
+                on=join_condition,
+                how="left",
+            ).select(
+                left_alias["L"].alias("L"),
+                F.when(left_alias[axes_equal], left_alias["R"])
+                .otherwise(right_alias["R"])
+                .alias("R"),
+                *[left_alias[column].alias(column) for column in left_indexes],
+                left_alias[left_order].alias(left_order),
+            )
+
+        aligned_frame = aligned_frame.withColumnRenamed(
+            left_order, NATURAL_ORDER_COLUMN_NAME
+        )
+        return aligned_frame, left_indexes
+
+    def _fillna_with_limit(
+        self,
+        replacement: Union[PySparkColumn, "GeoSeries"],
+        limit: int,
+    ) -> "GeoSeries":
+        """Fill the first missing rows while preserving the exact left axis."""
+        fill_rank = "__fillna_rank__"
+
+        if isinstance(replacement, GeoSeries):
+            aligned_frame, left_indexes = self._align_fillna_series(replacement)
+        else:
+            source_frame = self._internal.spark_frame
+            left_indexes = [
+                f"__fillna_left_index_{level}__"
+                for level in range(len(self._internal.index_spark_columns))
+            ]
+            aligned_frame = source_frame.select(
+                self.spark.column.alias("L"),
+                replacement.alias("R"),
+                *[
+                    column.alias(alias)
+                    for column, alias in zip(
+                        self._internal.index_spark_columns, left_indexes
+                    )
+                ],
+                scol_for(source_frame, NATURAL_ORDER_COLUMN_NAME),
+            )
+
+        # Rank missing rows first, avoiding separate branches that repeat alignment.
+        ranked_frame = _attach_ordered_sequence_column(
+            aligned_frame,
+            F.struct(F.col("L").isNotNull(), F.col(NATURAL_ORDER_COLUMN_NAME)),
+            fill_rank,
+        ).orderBy(NATURAL_ORDER_COLUMN_NAME)
+
+        left_crs = self.crs
+        left_srid = (left_crs.to_epsg() or 0) if left_crs is not None else 0
+        result_expression = F.when(
+            F.col("L").isNull() & (F.col(fill_rank) < F.lit(limit)),
+            stf.ST_SetSRID(F.col("R"), left_srid),
+        ).otherwise(F.col("L"))
+        return self._result_preserving_index(
+            result_expression,
+            ranked_frame,
+            [scol_for(ranked_frame, name) for name in left_indexes],
+            self._internal.index_fields,
+            self._internal.index_names,
+            returns_geom=True,
+            keep_name=True,
+        )
+
     # GeoSeries-only (not in GeoDataFrame)
     def fillna(
         self, value=None, inplace: bool = False, limit=None, **kwargs
@@ -4500,6 +5128,27 @@ class GeoSeries(GeoFrame, pspd.Series):
         Returns
         -------
         GeoSeries
+
+        Notes
+        -----
+        Index alignment with another ``GeoSeries`` is lazy. Invalid duplicate
+        replacement indexes raise a Spark error when the result is evaluated,
+        rather than a Python ``ValueError`` when calling ``fillna``. This also
+        applies to ``inplace=True``. A query that skips evaluating the result may
+        skip this validation.
+
+        On Spark 3.5.0--3.5.3, evaluating the same failed result again can hang
+        with adaptive query execution enabled (SPARK-49979). This also affects
+        failed ``inplace=True`` results. Use Spark 3.5.4 or newer to avoid this
+        upstream issue.
+
+        Sharing the alignment relies on ``spark.sql.exchange.reuse=true`` (the
+        default). Disabling it can execute the alignment four times instead of
+        once. Validation does not force a broadcast; normal Spark broadcast
+        settings still apply to the separate label join.
+
+        Using ``limit`` requires distributed global ordering and can be expensive
+        for large GeoSeries.
 
         Examples
         --------
@@ -4557,15 +5206,55 @@ class GeoSeries(GeoFrame, pspd.Series):
         """
         from shapely.geometry.base import BaseGeometry
 
-        # TODO: Implement limit https://github.com/apache/sedona/issues/2068
-        if limit:
-            raise NotImplementedError(
-                "GeoSeries.fillna() with limit is not implemented yet."
-            )
+        if limit is not None:
+            if isinstance(limit, (bool, np.bool_)):
+                raise ValueError("Limit must be an integer")
+            try:
+                limit = operator.index(limit)
+            except TypeError as exc:
+                raise ValueError("Limit must be an integer") from exc
+            if limit <= 0:
+                raise ValueError("Limit must be greater than 0")
+            # Distributed sequence positions use Spark LongType.
+            limit = min(limit, 9_223_372_036_854_775_807)
 
         align = True
 
-        if pd.isna(value) == True or isinstance(value, BaseGeometry):
+        if isinstance(value, (GeoSeries, gpd.GeoSeries)):
+
+            if isinstance(value, gpd.GeoSeries):
+                value_crs = value.crs
+                value = GeoSeries(
+                    pd.Series(
+                        value.to_numpy(dtype=object, copy=False),
+                        index=value.index,
+                        name=value.name,
+                        dtype=object,
+                    ),
+                    crs=value_crs,
+                )
+
+            if limit is not None:
+                result = self._fillna_with_limit(value, limit)
+            else:
+                aligned_frame, left_indexes = self._align_fillna_series(value)
+                aligned_frame = aligned_frame.orderBy(NATURAL_ORDER_COLUMN_NAME)
+                left_crs = self.crs
+                left_srid = (left_crs.to_epsg() or 0) if left_crs is not None else 0
+                result = self._result_preserving_index(
+                    F.coalesce(
+                        F.col("L"),
+                        stf.ST_SetSRID(F.col("R"), left_srid),
+                    ),
+                    aligned_frame,
+                    [scol_for(aligned_frame, name) for name in left_indexes],
+                    self._internal.index_fields,
+                    self._internal.index_names,
+                    returns_geom=True,
+                    keep_name=True,
+                )
+
+        elif pd.isna(value) == True or isinstance(value, BaseGeometry):
             if (
                 value is not None and pd.isna(value) == True
             ):  # ie. value is np.nan or pd.NA:
@@ -4576,30 +5265,31 @@ class GeoSeries(GeoFrame, pspd.Series):
 
                     value = GeometryCollection()
 
-            other, extended = self._make_series_of_val(value)
-            align = False if extended else align
+            if limit is not None:
+                replacement = stc.ST_GeomFromWKB(
+                    F.lit(value.wkb if value is not None else None).cast("binary")
+                )
+                result = self._fillna_with_limit(replacement, limit)
+            else:
+                other, extended = self._make_series_of_val(value)
+                align = False if extended else align
 
-        elif isinstance(value, (GeoSeries, gpd.GeoSeries)):
-
-            if not isinstance(value, GeoSeries):
-                value = GeoSeries(value)
-
-            # Replace all None's with empty geometries (this is a recursive call)
-            other = value.fillna(None)
+                left_crs = self.crs
+                left_srid = (left_crs.to_epsg() or 0) if left_crs is not None else 0
+                spark_expr = F.coalesce(
+                    F.col("L"), stf.ST_SetSRID(F.col("R"), left_srid)
+                )
+                result = self._row_wise_operation(
+                    spark_expr,
+                    other,
+                    align=align,
+                    returns_geom=True,
+                    default_val=None,
+                    keep_name=True,
+                )
 
         else:
             raise ValueError(f"Invalid value type: {type(value)}")
-
-        # Coalesce: If the value in L is null, use the corresponding value in R for that row
-        spark_expr = F.coalesce(F.col("L"), F.col("R"))
-        result = self._row_wise_operation(
-            spark_expr,
-            other,
-            align=align,
-            returns_geom=True,
-            default_val=None,
-            keep_name=True,
-        )
 
         if inplace:
             self._update_inplace(result)
@@ -5314,7 +6004,8 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
     # -----------------------------------------------------------------------------
 
     def _update_inplace(self, result: "GeoSeries", invalidate_sindex: bool = True):
-        self.rename(result.name, inplace=True)
+        if self._column_label != result._column_label:
+            self.rename(result.name, inplace=True)
         self._update_anchor(result._anchor)
         if invalidate_sindex:
             self._sindex = None
@@ -5357,15 +6048,6 @@ e": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3
         result._geometry_column_name = renamed.name
         result.index.name = self.index.name
         return result
-
-
-# -----------------------------------------------------------------------------
-# # Utils
-# -----------------------------------------------------------------------------
-
-
-def _get_series_col_name(ps_series: pspd.Series) -> str:
-    return ps_series.name if ps_series.name else SPARK_DEFAULT_SERIES_NAME
 
 
 def _to_bool(ps_series: pspd.Series, default: bool = False) -> pspd.Series:

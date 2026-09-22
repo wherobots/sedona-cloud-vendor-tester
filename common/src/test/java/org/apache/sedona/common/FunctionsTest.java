@@ -37,6 +37,8 @@ import org.geotools.referencing.operation.projection.ProjectionException;
 import org.junit.Test;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.geom.LinearRing;
+import org.locationtech.jts.geom.impl.CoordinateArraySequenceFactory;
+import org.locationtech.jts.geom.impl.PackedCoordinateSequenceFactory;
 import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.geom.prep.PreparedGeometryFactory;
 import org.locationtech.jts.io.ParseException;
@@ -1597,6 +1599,16 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void h3ToParent() {
+    long child = H3Utils.coordinateToCell(new Coordinate(1, 2), 8);
+    long parent = Functions.h3ToParent(child, 5);
+
+    assertEquals(5, H3Utils.h3.getResolution(parent));
+    assertTrue(H3Utils.h3.cellToChildren(parent, 8).contains(child));
+    assertEquals(child, Functions.h3ToParent(child, 8));
+  }
+
+  @Test
   public void geometricMedian() throws Exception {
     MultiPoint multiPoint =
         GEOMETRY_FACTORY.createMultiPointFromCoords(coordArray(1480, 0, 620, 0));
@@ -1926,11 +1938,13 @@ public class FunctionsTest extends TestBase {
             0);
     assertTrue(Functions.isPolygonCW(mPoly));
 
+    // Non-polygonal geometries have no polygonal component to violate the orientation, so
+    // PostGIS (and Sedona 2.0.0+) vacuously returns true for them.
     Geometry point = Constructors.geomFromWKT("POINT (45 20)", 0);
-    assertFalse(Functions.isPolygonCW(point));
+    assertTrue(Functions.isPolygonCW(point));
 
     Geometry lineClosed = Constructors.geomFromWKT("LINESTRING (30 20, 20 25, 20 15, 30 20)", 0);
-    assertFalse(Functions.isPolygonCW(lineClosed));
+    assertTrue(Functions.isPolygonCW(lineClosed));
   }
 
   @Test
@@ -1954,11 +1968,13 @@ public class FunctionsTest extends TestBase {
             0);
     assertTrue(Functions.isPolygonCCW(mPoly));
 
+    // Non-polygonal geometries have no polygonal component to violate the orientation, so
+    // PostGIS (and Sedona 2.0.0+) vacuously returns true for them.
     Geometry point = Constructors.geomFromWKT("POINT (45 20)", 0);
-    assertFalse(Functions.isPolygonCCW(point));
+    assertTrue(Functions.isPolygonCCW(point));
 
     Geometry lineClosed = Constructors.geomFromWKT("LINESTRING (30 20, 20 25, 20 15, 30 20)", 0);
-    assertFalse(Functions.isPolygonCCW(lineClosed));
+    assertTrue(Functions.isPolygonCCW(lineClosed));
   }
 
   @Test
@@ -1983,6 +1999,44 @@ public class FunctionsTest extends TestBase {
 
     assertTrue(Functions.isPolygonCW(clockwiseWithEmpty));
     assertTrue(Functions.isPolygonCCW(counterClockwiseWithEmpty));
+  }
+
+  @Test
+  public void testIsPolygonOrientationRecursesIntoGeometryCollections() throws ParseException {
+    // Empty geometry collections have no polygonal components: vacuously true for both.
+    Geometry emptyCollection = Constructors.geomFromWKT("GEOMETRYCOLLECTION EMPTY", 0);
+    assertTrue(Functions.isPolygonCW(emptyCollection));
+    assertTrue(Functions.isPolygonCCW(emptyCollection));
+
+    // A point paired with a nested collection containing a clockwise polygon: the point is
+    // ignored, and the polygon is found by recursing into the nested collection.
+    Geometry nestedCW =
+        Constructors.geomFromWKT(
+            "GEOMETRYCOLLECTION (POINT (2 2), GEOMETRYCOLLECTION (POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))))",
+            0);
+    assertTrue(Functions.isPolygonCW(nestedCW));
+    assertFalse(Functions.isPolygonCCW(nestedCW));
+
+    Geometry nestedCCW =
+        Constructors.geomFromWKT(
+            "GEOMETRYCOLLECTION (POINT (2 2), GEOMETRYCOLLECTION (POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))))",
+            0);
+    assertFalse(Functions.isPolygonCW(nestedCCW));
+    assertTrue(Functions.isPolygonCCW(nestedCCW));
+
+    // A collection mixing a clockwise and a counter-clockwise polygon matches neither predicate.
+    Geometry mixedOrientation =
+        Constructors.geomFromWKT(
+            "GEOMETRYCOLLECTION (POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0)), POLYGON ((10 10, 11 10, 11 11, 10 11, 10 10)))",
+            0);
+    assertFalse(Functions.isPolygonCW(mixedOrientation));
+    assertFalse(Functions.isPolygonCCW(mixedOrientation));
+  }
+
+  @Test
+  public void testIsPolygonOrientationHandlesNullGeometry() {
+    assertFalse(Functions.isPolygonCW(null));
+    assertFalse(Functions.isPolygonCCW(null));
   }
 
   @Test
@@ -2765,6 +2819,34 @@ public class FunctionsTest extends TestBase {
         () -> {
           Functions.simplifyPolygonHull(finalGeom, 0.1);
         });
+  }
+
+  @Test
+  public void nDims() throws ParseException {
+    assertEquals(2, Functions.nDims(Constructors.geomFromWKT("POINT (1 2)", 0)));
+    assertEquals(3, Functions.nDims(Constructors.geomFromWKT("LINESTRING (1 2 3, 4 5 6)", 0)));
+    assertEquals(
+        3,
+        Functions.nDims(Constructors.geomFromWKT("POLYGON M ((1 2 3, 3 4 3, 5 6 3, 1 2 3))", 0)));
+    assertEquals(4, Functions.nDims(Constructors.geomFromWKT("POINT ZM (1 2 3 4)", 0)));
+  }
+
+  @Test
+  public void nDimsEmptyGeometries() throws ParseException {
+    String[] emptyWkts = {
+      "POINT EMPTY",
+      "LINESTRING EMPTY",
+      "POLYGON EMPTY",
+      "MULTIPOINT EMPTY",
+      "MULTILINESTRING EMPTY",
+      "MULTIPOLYGON EMPTY",
+      "GEOMETRYCOLLECTION EMPTY"
+    };
+    for (String wkt : emptyWkts) {
+      assertEquals(wkt, 2, Functions.nDims(Constructors.geomFromWKT(wkt, 0)));
+    }
+    assertEquals(2, Functions.nDims(GEOMETRY_FACTORY.createPoint()));
+    assertEquals(2, Functions.nDims(GEOMETRY_FACTORY.createGeometryCollection()));
   }
 
   @Test
@@ -4597,6 +4679,166 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void setSRIDPreservesEmptyPolygonHoles() throws ParseException {
+    Polygon source =
+        (Polygon) Constructors.geomFromWKT("POLYGON ((0 0, 10 0, 10 10, 0 0), EMPTY)", 100);
+
+    Polygon result = (Polygon) Functions.setSRID(source, 4326);
+
+    assertEquals(1, result.getNumInteriorRing());
+    assertTrue(result.getInteriorRingN(0).isEmpty());
+    assertEquals(source.getExteriorRing(), result.getExteriorRing());
+    assertNotSame(source.getInteriorRingN(0), result.getInteriorRingN(0));
+    assertGeometryTreeUsesFactory(result, result.getFactory(), 4326);
+    assertEquals(100, source.getSRID());
+    assertEquals(1, source.getNumInteriorRing());
+  }
+
+  @Test
+  public void setSRIDCopiesEmptyPolygonWithoutMutatingInput() throws ParseException {
+    Polygon source = (Polygon) Constructors.geomFromWKT("POLYGON EMPTY", 100);
+    source.setUserData("source metadata");
+    source.getExteriorRing().setUserData("shell metadata");
+
+    Polygon result = (Polygon) Functions.setSRID(source, 4326);
+
+    assertEquals(100, source.getSRID());
+    assertNotSame(source, result);
+    assertNotSame(source.getExteriorRing(), result.getExteriorRing());
+    assertTrue(result.isEmpty());
+    assertGeometryTreeUsesFactory(result, result.getFactory(), 4326);
+    assertNull(result.getUserData());
+    assertNull(result.getExteriorRing().getUserData());
+    assertEquals("source metadata", source.getUserData());
+    assertEquals("shell metadata", source.getExteriorRing().getUserData());
+  }
+
+  @Test
+  public void setSRIDPreservesNestedEmptyComponentsAndCopiesStructure() {
+    GeometryFactory sourceFactory =
+        new GeometryFactory(new PrecisionModel(), 100, CoordinateArraySequenceFactory.instance());
+    Point emptyPoint =
+        sourceFactory.createPoint(sourceFactory.getCoordinateSequenceFactory().create(0, 3, 0));
+    Polygon emptyPolygon =
+        sourceFactory.createPolygon(
+            sourceFactory.createLinearRing(
+                sourceFactory.getCoordinateSequenceFactory().create(0, 4, 1)));
+    Point populatedPoint = sourceFactory.createPoint(new Coordinate(1, 2));
+    GeometryCollection nested =
+        sourceFactory.createGeometryCollection(new Geometry[] {emptyPolygon, populatedPoint});
+    GeometryCollection source =
+        sourceFactory.createGeometryCollection(new Geometry[] {emptyPoint, nested});
+    source.setSRID(100);
+    emptyPoint.setSRID(101);
+    nested.setSRID(102);
+    emptyPolygon.setSRID(103);
+    populatedPoint.setSRID(104);
+    source.setUserData("root metadata");
+    emptyPoint.setUserData("child metadata");
+    nested.setUserData("nested metadata");
+
+    GeometryCollection result = (GeometryCollection) Functions.setSRID(source, 4326);
+
+    assertEquals(2, result.getNumGeometries());
+    assertEquals(2, result.getGeometryN(1).getNumGeometries());
+    assertGeometryTreeUsesFactory(result, result.getFactory(), 4326);
+    assertNull(result.getUserData());
+    assertNull(result.getGeometryN(0).getUserData());
+    assertNull(result.getGeometryN(1).getUserData());
+    assertEquals(3, ((Point) result.getGeometryN(0)).getCoordinateSequence().getDimension());
+    assertEquals(
+        4,
+        ((Polygon) result.getGeometryN(1).getGeometryN(0))
+            .getExteriorRing()
+            .getCoordinateSequence()
+            .getDimension());
+    assertEquals(
+        1,
+        ((Polygon) result.getGeometryN(1).getGeometryN(0))
+            .getExteriorRing()
+            .getCoordinateSequence()
+            .getMeasures());
+    assertNotSame(source, result);
+    assertNotSame(source.getGeometryN(0), result.getGeometryN(0));
+    Point resultPoint = (Point) result.getGeometryN(1).getGeometryN(1);
+    resultPoint.getCoordinateSequence().setOrdinate(0, 0, 9);
+    assertEquals(1, populatedPoint.getX(), 0);
+    assertEquals(100, source.getSRID());
+    assertEquals(101, emptyPoint.getSRID());
+    assertEquals(102, nested.getSRID());
+    assertEquals(103, emptyPolygon.getSRID());
+    assertEquals(104, populatedPoint.getSRID());
+    assertEquals("root metadata", source.getUserData());
+    assertEquals("child metadata", emptyPoint.getUserData());
+    assertEquals("nested metadata", nested.getUserData());
+  }
+
+  @Test
+  public void setSRIDPreservesPackedCoordinateSequenceFactoryAndEmptyLayouts() {
+    GeometryFactory sourceFactory =
+        new GeometryFactory(
+            new PrecisionModel(), 7, PackedCoordinateSequenceFactory.DOUBLE_FACTORY);
+    Point emptyXym =
+        sourceFactory.createPoint(sourceFactory.getCoordinateSequenceFactory().create(0, 3, 1));
+    LineString emptyXyz =
+        sourceFactory.createLineString(
+            sourceFactory.getCoordinateSequenceFactory().create(0, 3, 0));
+    LinearRing emptyXyzmShell =
+        sourceFactory.createLinearRing(
+            sourceFactory.getCoordinateSequenceFactory().create(0, 4, 1));
+    GeometryCollection source =
+        sourceFactory.createGeometryCollection(
+            new Geometry[] {
+              sourceFactory.createMultiPoint(new Point[] {emptyXym}),
+              sourceFactory.createMultiLineString(new LineString[] {emptyXyz}),
+              sourceFactory.createMultiPolygon(
+                  new Polygon[] {sourceFactory.createPolygon(emptyXyzmShell)})
+            });
+
+    GeometryCollection result = (GeometryCollection) Functions.setSRID(source, 3857);
+
+    assertSame(
+        PackedCoordinateSequenceFactory.DOUBLE_FACTORY,
+        result.getFactory().getCoordinateSequenceFactory());
+    assertEquals(1, result.getGeometryN(0).getNumGeometries());
+    assertEquals(1, result.getGeometryN(1).getNumGeometries());
+    assertEquals(1, result.getGeometryN(2).getNumGeometries());
+    CoordinateSequence pointSequence =
+        ((Point) result.getGeometryN(0).getGeometryN(0)).getCoordinateSequence();
+    CoordinateSequence lineSequence =
+        ((LineString) result.getGeometryN(1).getGeometryN(0)).getCoordinateSequence();
+    CoordinateSequence shellSequence =
+        ((Polygon) result.getGeometryN(2).getGeometryN(0))
+            .getExteriorRing()
+            .getCoordinateSequence();
+    assertEquals(3, pointSequence.getDimension());
+    assertEquals(1, pointSequence.getMeasures());
+    assertEquals(3, lineSequence.getDimension());
+    assertEquals(0, lineSequence.getMeasures());
+    assertEquals(4, shellSequence.getDimension());
+    assertEquals(1, shellSequence.getMeasures());
+    assertGeometryTreeUsesFactory(result, result.getFactory(), 3857);
+    assertEquals(7, source.getFactory().getSRID());
+  }
+
+  private static void assertGeometryTreeUsesFactory(
+      Geometry geometry, GeometryFactory factory, int srid) {
+    assertSame(factory, geometry.getFactory());
+    assertEquals(srid, geometry.getSRID());
+    assertEquals(srid, geometry.getFactory().getSRID());
+    for (int i = 0; i < geometry.getNumGeometries(); i++) {
+      Geometry child = geometry.getGeometryN(i);
+      if (child != geometry) assertGeometryTreeUsesFactory(child, factory, srid);
+    }
+    if (geometry instanceof Polygon) {
+      Polygon polygon = (Polygon) geometry;
+      assertGeometryTreeUsesFactory(polygon.getExteriorRing(), factory, srid);
+      for (int i = 0; i < polygon.getNumInteriorRing(); i++)
+        assertGeometryTreeUsesFactory(polygon.getInteriorRingN(i), factory, srid);
+    }
+  }
+
+  @Test
   public void closestPoint() {
     Point point1 = GEOMETRY_FACTORY.createPoint(new Coordinate(1, 1));
     LineString lineString1 =
@@ -4798,6 +5040,24 @@ public class FunctionsTest extends TestBase {
             "MULTIPOLYGON ZM (((30 10 5 1, 40 40 10 2, 20 40 15 3, 10 20 20 4, 30 10 5 1)), ((15 5 3 1, 20 10 6 2, 10 10 7 3, 15 5 3 1)))",
             0);
     assertEquals(_4D, Functions.zmFlag(geom));
+  }
+
+  @Test
+  public void testZmFlagEmptyGeometries() throws ParseException {
+    String[] emptyWkts = {
+      "POINT EMPTY",
+      "LINESTRING EMPTY",
+      "POLYGON EMPTY",
+      "MULTIPOINT EMPTY",
+      "MULTILINESTRING EMPTY",
+      "MULTIPOLYGON EMPTY",
+      "GEOMETRYCOLLECTION EMPTY"
+    };
+    for (String wkt : emptyWkts) {
+      assertEquals(wkt, 0, Functions.zmFlag(Constructors.geomFromWKT(wkt, 0)));
+    }
+    assertEquals(0, Functions.zmFlag(GEOMETRY_FACTORY.createPoint()));
+    assertEquals(0, Functions.zmFlag(GEOMETRY_FACTORY.createGeometryCollection()));
   }
 
   @Test

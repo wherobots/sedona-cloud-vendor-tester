@@ -18,7 +18,7 @@
  */
 package org.apache.sedona.sql
 
-import org.apache.sedona.common.raster.MapAlgebra
+import org.apache.sedona.common.raster.{MapAlgebra, RasterBandAccessors}
 import org.apache.sedona.common.utils.RasterUtils
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
@@ -879,9 +879,73 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       val expected = -999
       assertEquals(expected, actual, 0.001d)
 
-      val actualNull =
-        df.selectExpr("RS_BandNoDataValue(RS_SetBandNoDataValue(raster, 1, null))").first().get(0)
-      assertNull(actualNull)
+      // Passing a null noDataValue removes the no-data value instead of returning a null raster
+      val cleared = df
+        .selectExpr(
+          "RS_SetBandNoDataValue(RS_SetBandNoDataValue(raster, 1, -999), 1, null) as raster")
+      assertNotNull(cleared.first().get(0))
+      assertNull(cleared.selectExpr("RS_BandNoDataValue(raster)").first().get(0))
+
+      val clearedNoBandIndex = df
+        .selectExpr("RS_SetBandNoDataValue(RS_SetBandNoDataValue(raster, -999), null) as raster")
+      assertNotNull(clearedNoBandIndex.first().get(0))
+      assertNull(clearedNoBandIndex.selectExpr("RS_BandNoDataValue(raster)").first().get(0))
+
+      // A null raster still yields a null result
+      assertNull(sparkSession.sql("SELECT RS_SetBandNoDataValue(null, -999)").first().get(0))
+    }
+
+    it("Passed RS_SetBandNoDataValue replacement preserves other bands") {
+      val input =
+        Seq((Seq(1.25, 5.0, 3.0, 4.0), Seq(11.0, 5.0, 13.0, 14.0), Seq(21.0, 22.0, 5.0, 24.5)))
+          .toDF("band1", "band2", "band3")
+      val raster = input.selectExpr(
+        "RS_AddBandFromArray(RS_AddBandFromArray(RS_AddBandFromArray(" +
+          "RS_MakeEmptyRaster(3, 'd', 2, 2, 0, 2, 1, -1, 0, 0, 4326), " +
+          "band1, 1, 5d), band2, 2, 13d), band3, 3, 24.5d) AS raster")
+      // Collect the raster itself to cover the four-argument SQL binding and serialization.
+      val result = raster
+        .selectExpr("RS_SetBandNoDataValue(raster, 2, -999d, true)")
+        .first()
+        .getAs[GridCoverage2D](0)
+      assert(MapAlgebra.bandAsArray(result, 1).toSeq == Seq(1.25, 5.0, 3.0, 4.0))
+      assert(MapAlgebra.bandAsArray(result, 2).toSeq == Seq(11.0, 5.0, -999.0, 14.0))
+      assert(MapAlgebra.bandAsArray(result, 3).toSeq == Seq(21.0, 22.0, 5.0, 24.5))
+      assertEquals(5.0, RasterBandAccessors.getBandNoDataValue(result, 1), 0)
+      assertEquals(-999.0, RasterBandAccessors.getBandNoDataValue(result, 2), 0)
+      assertEquals(24.5, RasterBandAccessors.getBandNoDataValue(result, 3), 0)
+    }
+
+    it("Passed RS_SetBandNoDataValue clearing a band other than band 1") {
+      // The clear consults the target band's no-data value; band 1 having none
+      // must not short-circuit the removal on band 2.
+      var df = sparkSession.sql(
+        "SELECT RS_MakeEmptyRaster(2, 20, 20, 0, 0, 8, 8, 0.1, 0.1, 0) AS raster")
+      df = df.selectExpr("RS_SetBandNoDataValue(raster, 2, 444) AS raster")
+      assertEquals(
+        444.0,
+        df.selectExpr("RS_BandNoDataValue(raster, 2)").first().getDouble(0),
+        0.001d)
+      val cleared = df.selectExpr("RS_SetBandNoDataValue(raster, 2, null) AS raster")
+      assertNotNull(cleared.first().get(0))
+      assertNull(cleared.selectExpr("RS_BandNoDataValue(raster, 2)").first().get(0))
+      assertNull(cleared.selectExpr("RS_BandNoDataValue(raster, 1)").first().get(0))
+    }
+
+    it("Passed RS_SetBandNoDataValue null clear survives a GeoTiff round trip") {
+      // RS_AsGeoTiff must not write a default GDAL_NODATA of 0 for a raster that no
+      // longer has a no-data value, or reading the bytes back resurrects it.
+      val df = sparkSession.read
+        .format("binaryFile")
+        .load(resourceFolder + "raster/raster_with_no_data/test5.tiff")
+      val cleared =
+        df.selectExpr("RS_SetBandNoDataValue(RS_FromGeoTiff(content), null) AS raster")
+      val actual = cleared
+        .selectExpr("RS_AsGeoTiff(raster) AS bytes")
+        .selectExpr("RS_BandNoDataValue(RS_FromGeoTiff(bytes))")
+        .first()
+        .get(0)
+      assertNull(actual)
     }
 
     it("Passed RS_SetBandNoDataValue with empty raster") {
@@ -2315,6 +2379,80 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       df = df.selectExpr("RS_FromGeoTiff(content) as raster")
       val result = df.selectExpr("RS_BandNoDataValue(raster, 1)").first().getDouble(0)
       assertEquals(0, result, 1e-9)
+    }
+
+    it("Passed RS_BandNoDataValue - NaN noDataValue for raster from geotiff") {
+      val fixture = resourceFolder + "raster_geotiff_nodata/nan_nodata.tif"
+      var df = sparkSession.read.format("binaryFile").load(fixture)
+      df = df.selectExpr("RS_FromGeoTiff(content) as raster")
+      assert(df.selectExpr("RS_BandNoDataValue(raster)").first().getDouble(0).isNaN)
+      assert(df.selectExpr("RS_BandNoDataValue(raster, 1)").first().getDouble(0).isNaN)
+      assertEquals(14L, df.selectExpr("RS_Count(raster, 1, true)").first().getLong(0))
+      assertEquals(16L, df.selectExpr("RS_Count(raster, 1, false)").first().getLong(0))
+      assertEquals(
+        107.5 / 14,
+        df.selectExpr("RS_SummaryStats(raster, 'mean', 1, true)").first().getDouble(0),
+        1e-9)
+      assert(
+        df.selectExpr("RS_SummaryStats(raster, 'mean', 1, false)")
+          .first()
+          .getDouble(0)
+          .isNaN)
+
+      // NaN nodata survives a GeoTIFF round trip
+      assert(
+        df.selectExpr("RS_BandNoDataValue(RS_FromGeoTiff(RS_AsGeoTiff(raster)))")
+          .first()
+          .getDouble(0)
+          .isNaN)
+      assertEquals(
+        14L,
+        df.selectExpr("RS_Count(RS_FromGeoTiff(RS_AsGeoTiff(raster)), 1, true)")
+          .first()
+          .getLong(0))
+      assert(
+        df.selectExpr("RS_BandNoDataValue(RS_FromGeoTiff(RS_AsCOG(raster)))")
+          .first()
+          .getDouble(0)
+          .isNaN)
+
+      // NaN nodata pixels can be replaced by a numeric nodata value
+      val replaced = df.selectExpr("RS_SetBandNoDataValue(raster, 1, -9999, true) as raster")
+      assertEquals(
+        -9999.0,
+        replaced.selectExpr("RS_BandNoDataValue(raster)").first().getDouble(0),
+        0)
+      assertEquals(14L, replaced.selectExpr("RS_Count(raster, 1, true)").first().getLong(0))
+      assertEquals(
+        -9999.0,
+        replaced.selectExpr("RS_BandAsArray(raster, 1)[0]").first().getDouble(0),
+        0)
+
+      // RS_Value reports a nodata pixel as null, for a NaN nodata value too
+      assertNull(df.selectExpr("RS_Value(raster, ST_Point(0.5, 3.5), 1)").first().get(0))
+      assertEquals(
+        1.0,
+        df.selectExpr("RS_Value(raster, ST_Point(1.5, 3.5), 1)").first().getDouble(0),
+        0)
+    }
+
+    it("Passed RS_SetBandNoDataValue - NaN noDataValue") {
+      val df = sparkSession.sql("SELECT RS_MakeEmptyRaster(1, 'F', 2, 2, 0, 0, 1) as raster")
+      assert(
+        df.selectExpr("RS_BandNoDataValue(RS_SetBandNoDataValue(raster, 1, double('NaN')))")
+          .first()
+          .getDouble(0)
+          .isNaN)
+      assert(
+        df.selectExpr("RS_BandNoDataValue(RS_SetBandNoDataValue(raster, cast('NaN' as double)))")
+          .first()
+          .getDouble(0)
+          .isNaN)
+      assertNull(
+        df.selectExpr(
+          "RS_BandNoDataValue(RS_SetBandNoDataValue(RS_SetBandNoDataValue(raster, 1, double('NaN')), 1, null))")
+          .first()
+          .get(0))
     }
 
     it("Passed RS_BandPixelType from raster") {
