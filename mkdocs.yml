@@ -102,8 +102,10 @@ nav:
               - DataFrame/SQL: api/viz/sql.md
               - RDD: api/viz/java-api.md
           - Sedona R: api/rdocs
+          - GeoPandas API coverage: api/geopandas-coverage.md
           - Sedona Python: api/pydocs
       - Release notes: setup/release-notes.md
+      - Migrating to Sedona 2.0: setup/migration-2.0.md
 
   - SedonaFlink:
       - Home: sedonaflink.md
@@ -257,6 +259,8 @@ plugins:
       archive_date_format: MMMM yyyy
       # Maximum number of authors to display in the post excerpt
       post_excerpt_max_authors: 5
+      # Generates dedicated, indexable pages for each author
+      authors_profiles: true
   - i18n:
       docs_structure: suffix
       fallback_to_default: true
@@ -299,6 +303,7 @@ plugins:
             Raster DataFrame / SQL app: 栅格 DataFrame / SQL 应用
             Pure SQL environment: 纯 SQL 环境
             GeoPandas API on Sedona: Sedona 上的 GeoPandas API
+            GeoPandas API coverage: GeoPandas API 覆盖情况
             Spatial RDD app: 空间 RDD 应用
             Sedona R: Sedona R
             Work with GeoPandas and Shapely: 与 GeoPandas 和 Shapely 配合使用

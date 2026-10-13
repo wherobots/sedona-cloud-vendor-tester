@@ -105,7 +105,7 @@ def _extract(frame: DataFrame) -> DataFrame:
             "_line",
             F.expr(
                 "CASE WHEN ring = 0 THEN ST_ExteriorRing(_polygon) "
-                "ELSE ST_InteriorRingN(_polygon, ring - 1) END"
+                "ELSE ST_InteriorRingN(_polygon, ring) END"
             ),
         )
         .withColumn("_points", F.expr("ST_DumpPoints(_line)"))
@@ -284,8 +284,7 @@ def _rebuild(occ: DataFrame, original: DataFrame) -> DataFrame:
     parts = original_parts.join(parts, ["id", "part"], "left").select(
         "id",
         "part",
-        # ST_SetSRID copies geometry through GeometryEditor, which removes
-        # empty collection members. Set each polygon's SRID before collecting.
+        # Restore each reconstructed polygon's SRID before collecting the parts.
         F.expr(
             "ST_SetSRID(CASE WHEN ST_IsEmpty(_original_polygon) "
             "THEN _original_polygon ELSE _polygon END, _srid)"
@@ -398,7 +397,7 @@ def simplify_coverage(
         if (
             original.where(
                 "exists(ST_Dump(geom), p -> CASE WHEN ST_NumInteriorRings(p) = 0 "
-                "THEN false ELSE exists(sequence(0, ST_NumInteriorRings(p) - 1), "
+                "THEN false ELSE exists(sequence(1, ST_NumInteriorRings(p)), "
                 "i -> ST_IsEmpty(ST_InteriorRingN(p, i))) END)"
             )
             .limit(1)

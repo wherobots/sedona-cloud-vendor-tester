@@ -19,8 +19,27 @@
 
 ## Sedona 2.0.0
 
+See [Migrating to Sedona 2.0](migration-2.0.md) for what to check when upgrading from 1.x.
+
 ### Breaking Changes
 
+* **Positions count from 1, as in PostGIS**: `ST_GeometryN` and `ST_InteriorRingN` read `n`
+  1-based, and the grid-coordinate forms of `RS_Value` and `RS_Values` read `(1, 1)` as the
+  upper-left pixel. They were 0-based, so existing queries now address the next element or pixel;
+  add 1 to the index. An index of `0` or below returns `NULL`.
+* **`RS_Union` and `RS_Union_Aggr` are renamed `RS_Stack` and `RS_Stack_Aggr`**: the functions
+  stack the bands of several rasters into one raster; they do not merge grids the way a raster
+  union (PostGIS `ST_Union`) does. The old names are removed, so replace them in queries. The
+  behaviour is unchanged.
+* **`RS_SetBandNoDataValue` replace form removed**: the 4-argument
+  `RS_SetBandNoDataValue(raster, bandIndex, noDataValue, replace)` form is replaced by
+  `RS_ReplaceBandNoDataValue(raster, bandIndex, noDataValue)`. Change
+  `RS_SetBandNoDataValue(raster, band, value, true)` to `RS_ReplaceBandNoDataValue(raster, band, value)`,
+  and drop a `false` fourth argument.
+
+* **WKB output**: `ST_AsBinary`, `ST_AsEWKB`, and `ST_AsHEXEWKB` now retain M for measured
+  geometries in Spark, Flink, and Snowflake, including geometries read from WKT. Earlier
+  versions dropped M, so these inputs now produce XYM or XYZM instead of XY or XYZ.
 * **Flink**: The minimum supported Flink version is now 1.19 (previously 1.12). Flink 1.12 - 1.18
   are no longer supported, as the Apache Flink community itself no longer supports those
   versions. Flink 2.2 is now supported alongside 1.19+.
@@ -60,6 +79,7 @@
 #### GeoPandas API
 
 * [<a href='https://github.com/apache/sedona/issues/2068'>GH-2068</a>] - Implement the `limit` parameter for `GeoSeries.fillna`
+* [<a href='https://github.com/apache/sedona/issues/3182'>GH-3182</a>] - Add distributed point-only inner `sjoin_nearest` joins using existing Sedona KNN tie semantics, with optional distance output and a maximum-distance result filter
 * [<a href='https://github.com/apache/sedona/issues/3257'>GH-3257</a>] - Implement distributed GeoSeries and GeoDataFrame Hilbert-distance spatial ordering
 * [<a href='https://github.com/apache/sedona/issues/3260'>GH-3260</a>] - Implement distributed GeoSeries and GeoDataFrame identical-geometry equality
 * [<a href='https://github.com/apache/sedona/issues/3273'>GH-3273</a>] - Implement distributed GeoSeries and GeoDataFrame polygonal coverage validation and invalid-edge diagnostics
@@ -68,8 +88,13 @@
 * [<a href='https://github.com/apache/sedona/issues/3344'>GH-3344</a>] - Expose `SpatialIndex.valid_query_predicates`
 * [<a href='https://github.com/apache/sedona/issues/3357'>GH-3357</a>] - Implement `list_layers` for GeoPackage using the native Spark reader
 * [<a href='https://github.com/apache/sedona/issues/3370'>GH-3370</a>] - Add distributed `simplify_coverage` for GeoSeries and GeoDataFrame, using reliable Spark checkpoints
+* [<a href='https://github.com/apache/sedona/issues/3388'>GH-3388</a>] - Add distributed coordinate `transform` for GeoSeries and GeoDataFrame with batch-local callbacks
 
 ### Bug Fixes
+
+#### Python
+
+* [<a href='https://github.com/apache/sedona/issues/3393'>GH-3393</a>] - Preserve empty multipart geometry members during Python deserialization, including empty MultiPoint members with newer GEOS versions
 
 #### Sedona SQL
 

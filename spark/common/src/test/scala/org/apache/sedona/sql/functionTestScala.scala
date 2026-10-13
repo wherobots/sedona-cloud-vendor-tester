@@ -1075,6 +1075,76 @@ class functionTestScala
       assert(Hex.encodeHexString(df.first().get(0).asInstanceOf[Array[Byte]]) == s)
     }
 
+    it("WKB output preserves declared point layouts after a shuffle") {
+      val nan = "000000000000F87F"
+      val xy = "000000000000F03F0000000000000040"
+      val layouts = Seq(
+        ("0101000000", 2, 0),
+        ("0101000080", 3, 0),
+        ("0101000040", 3, 1),
+        ("01010000C0", 4, 1))
+      val cases = for {
+        (header, dimension, measures) <- layouts
+        empty <- Seq(false, true)
+      } yield (
+        header + (if (empty) nan * 2 else xy) + nan * (dimension - 2),
+        dimension,
+        measures,
+        empty)
+      val geometries = cases.zipWithIndex
+        .map { case ((wkb, _, _, _), id) => (id, wkb) }
+        .toDF("id", "wkb")
+        .selectExpr("id", "ST_SetSRID(ST_GeomFromWKB(unhex(wkb)), 4326) AS geom")
+        .repartition(2)
+        .cache()
+      try {
+        assertEquals(cases.size.toLong, geometries.count())
+        val rows = geometries
+          .selectExpr(
+            "id",
+            "ST_AsBinary(geom)",
+            "ST_AsEWKB(geom)",
+            "ST_AsHEXEWKB(geom)",
+            "ST_AsHEXEWKB(geom, 'XDR')")
+          .collect()
+        rows.foreach { row =>
+          val (_, dimension, measures, empty) = cases(row.getInt(0))
+          val outputs = Seq(
+            row.getAs[Array[Byte]](1) -> 0,
+            row.getAs[Array[Byte]](2) -> 4326,
+            Hex.decodeHex(row.getString(3).toCharArray) -> 4326,
+            Hex.decodeHex(row.getString(4).toCharArray) -> 4326)
+          outputs.foreach { case (bytes, srid) =>
+            val point =
+              org.apache.sedona.common.Constructors.geomFromWKB(bytes).asInstanceOf[Point]
+            assertEquals(dimension, point.getCoordinateSequence.getDimension)
+            assertEquals(measures, point.getCoordinateSequence.getMeasures)
+            assertEquals(empty, point.isEmpty)
+            assertEquals(srid, point.getSRID)
+            assertEquals(5 + dimension * 8 + (if (srid == 0) 0 else 4), bytes.length)
+            if (!empty) {
+              assertEquals(1.0, point.getX, 0.0)
+              assertEquals(2.0, point.getY, 0.0)
+              (2 until dimension).foreach { ordinate =>
+                assertTrue(point.getCoordinateSequence.getOrdinate(0, ordinate).isNaN)
+              }
+            }
+          }
+          assertEquals(1, outputs(2)._1(0).toInt)
+          assertEquals(0, outputs(3)._1(0).toInt)
+        }
+      } finally {
+        geometries.unpersist()
+      }
+    }
+
+    it("WKB output functions return null for null geometry") {
+      val row = sparkSession
+        .sql("SELECT ST_AsBinary(NULL), ST_AsEWKB(NULL), ST_AsHEXEWKB(NULL)")
+        .first()
+      (0 until 3).foreach(index => assertTrue(row.isNullAt(index)))
+    }
+
     it("Passed ST_Simplify") {
       val baseDf = sparkSession.sql("SELECT ST_Buffer(ST_GeomFromWKT('POINT (0 2)'), 10) AS geom")
       val actualPoints = baseDf.selectExpr("ST_NPoints(ST_Simplify(geom, 1))").first().get(0)
@@ -1691,8 +1761,8 @@ class functionTestScala
             |)
             |SELECT
             |  ST_SRID(geom),
-            |  ST_HasZ(ST_GeometryN(ST_GeometryN(geom, 0), 0)),
-            |  ST_HasM(ST_GeometryN(ST_GeometryN(geom, 0), 0))
+            |  ST_HasZ(ST_GeometryN(ST_GeometryN(geom, 1), 1)),
+            |  ST_HasM(ST_GeometryN(ST_GeometryN(geom, 1), 1))
             |FROM shared
             |""".stripMargin)
         .first()
@@ -1816,12 +1886,14 @@ class functionTestScala
   }
 
   it("Should pass ST_GeometryN") {
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 0) shouldBe Some("POINT (1 2)")
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 1) shouldBe Some("POINT (3 4)")
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 2) shouldBe Some("POINT (5 6)")
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 3) shouldBe Some("POINT (8 9)")
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 4) shouldBe None
-    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 4) shouldBe None
+    // 1-based, as in PostGIS
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 1) shouldBe Some("POINT (1 2)")
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 2) shouldBe Some("POINT (3 4)")
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 3) shouldBe Some("POINT (5 6)")
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 4) shouldBe Some("POINT (8 9)")
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 5) shouldBe None
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", 0) shouldBe None
+    calculateGeometryN("MULTIPOINT((1 2), (3 4), (5 6), (8 9))", -1) shouldBe None
 
   }
 
@@ -1836,7 +1908,7 @@ class functionTestScala
       .union(createSampleLineStringsDf(5, "geom"))
 
     When("Using ST_InteriorRingN")
-    val wholes = (0 until 3).flatMap(index =>
+    val wholes = (1 to 3).flatMap(index =>
       polygonDf
         .selectExpr(s"ST_InteriorRingN(geom, $index) as geom")
         .selectExpr("ST_AsText(geom)")
@@ -3222,6 +3294,27 @@ class functionTestScala
       val actual = df.take(1)(0).get(0).asInstanceOf[Double]
       val expected = df.take(1)(0).get(1).asInstanceOf[java.math.BigDecimal].doubleValue()
       assertEquals(expected, actual, 0.1)
+    }
+  }
+
+  it("ST_DistanceSphere and ST_DistanceSpheroid should return null for empty geometries") {
+    val point = "ST_GeomFromWKT('POINT (0 0)')"
+    for (wkt <- Seq(
+        "POINT EMPTY",
+        "LINESTRING EMPTY",
+        "POLYGON EMPTY",
+        "GEOMETRYCOLLECTION EMPTY")) {
+      val empty = s"ST_GeomFromWKT('$wkt')"
+      val row = sparkSession
+        .sql(s"""SELECT
+             |ST_DistanceSphere($point, $empty),
+             |ST_DistanceSphere($empty, $point),
+             |ST_DistanceSphere($point, $empty, 6378137.0),
+             |ST_DistanceSpheroid($point, $empty),
+             |ST_DistanceSpheroid($empty, $point),
+             |ST_DistanceSpheroid($empty, $empty)""".stripMargin)
+        .first()
+      (0 until row.length).foreach(i => assert(row.isNullAt(i), s"column $i for $wkt"))
     }
   }
 

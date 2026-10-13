@@ -21,6 +21,8 @@
 
 Apache Sedona 上的 GeoPandas API 提供了与 GeoPandas 一致的接口，可以让您的地理空间分析突破单机的局限。该 API 把熟悉的 GeoPandas DataFrame 语法与 Apache Sedona 在 Apache Spark 上的分布式处理能力结合起来，让您能够使用同样的代码模式处理行星级（planetary-scale）的数据集。
 
+请参阅 [API 覆盖情况参考](../api/geopandas-coverage.md)，了解支持的方法、参数限制和 API 覆盖率。
+
 ## 概览
 
 ### 什么是 Apache Sedona 的 GeoPandas API？
@@ -239,6 +241,35 @@ intersects_result = left_df.sjoin(right_df, predicate="intersects")
 contains_result = left_df.sjoin(right_df, predicate="contains")
 ```
 
+### 最近邻点连接
+
+`GeoDataFrame.sjoin_nearest`、`sedona.spark.geopandas.sjoin_nearest` 和
+`sedona.spark.geopandas.tools.sjoin_nearest` 使用 Sedona 的分布式 KNN 连接。
+当前实现支持 **点数据的内连接**：
+
+```python
+nearest = left_points.sjoin_nearest(
+    right_points,
+    distance_col="distance",
+    max_distance=100,
+)
+```
+
+结果保留左侧几何、CRS 和索引，以及右侧索引和双方属性。重名属性使用
+`_left` 和 `_right` 后缀。缺失或空几何不参与匹配。距离按平面计算，使用 CRS
+单位并忽略 Z；请使用投影 CRS 获取有意义的距离单位。可选的 `max_distance`
+必须是有限正数，仅在最近邻搜索后过滤结果，不会缩小搜索范围。
+`distance_col` 必须是新列，输出行的顺序不保证。
+
+**等距候选遵循 Sedona 配置，不保证像 GeoPandas 一样返回所有等距行。**
+`spark.sedona.join.knn.includeTieBreakers` 默认为 `false`，在等距候选中选择
+一行，选择顺序不保证。设为 `true` 会返回等距候选，但候选几何完全相同的
+不同记录仍可能被省略。本 API 不会修改此会话配置。
+
+目前仅支持 `how="inner"`、`exclusive=False`、默认后缀、唯一的单层字符串列名
+和单层索引（允许重复索引值）。不支持的选项、非空的非点几何及歧义输出列名
+会明确报错。输入验证在 Spark 上计算标量汇总，几何数据始终保持分布式。
+
 ### 坐标参考系操作
 
 在不同坐标参考系（CRS）之间转换几何对象：
@@ -315,6 +346,7 @@ Apache Sedona 的 GeoPandas API 已实现最常用的 GeoSeries 与 GeoDataFrame
 - `clip()` —— 使用标量、矩形或分布式掩膜裁剪几何
 - `overlay()` —— 支持全部五种 GeoPandas 模式的分布式数据框叠加
 - `buffer()` —— 几何缓冲
+- `transform()` —— 在 executor 上分批执行坐标数组回调
 - `distance()` —— 距离计算
 - `intersects()`、`contains()`、`within()` —— 空间谓词
 - `geom_equals_identical()` —— 对所有已存储坐标维度执行精确的结构相等性比较
@@ -338,6 +370,7 @@ Apache Sedona 的 GeoPandas API 已实现最常用的 GeoSeries 与 GeoDataFrame
 ### 空间运算
 
 - `buffer()` —— 几何缓冲
+- `transform()` —— 在 executor 上分批执行坐标数组回调
 - `distance()` —— 距离计算
 - `intersects()`、`contains()`、`within()` —— 空间谓词
 - `intersection()` —— 几何相交
@@ -401,6 +434,19 @@ simplified = coverage.simplify_coverage(0.1, simplify_boundary=False)
 重建过程按环和原始几何构造数组。每个几何最多 100,000 个坐标的准入限制不是
 内存安全保证：低于此限制的长环仍可能耗尽 executor 内存。实现不会把完整覆盖
 或整个邻域收集成几何数组。
+
+`transform(transformation, include_z=False)` 自 v2.0.0 起可用，要求 driver
+和 worker 均安装 Spark >=3.5 和 Shapely >=2.0。该方法在 executor 上以批次为单位，
+惰性地将可序列化的回调应用于 NumPy 坐标数组，并保留索引、CRS 元数据、逐行 SRID、
+缺失值和空几何。GeoDataFrame 调用会转换活动几何列，并返回 GeoSeries。
+
+与本地 GeoPandas 不同，回调每次只能看到一个 Spark 批次，而非整个 GeoSeries。
+请使用确定性的逐坐标回调，例如 `lambda coords: coords + [1, 2]`。
+`lambda coords: coords - coords.mean(axis=0)` 会分别对每个批次做中心化，
+因此结果可能随分区方式或批次大小而变化。若需要全局统计量，请先通过分布式聚合
+单独计算，再将结果作为常量传入回调。Spark 可能多次执行回调，因此结果不能依赖
+可变状态；Sedona 无法自动检测这些批次依赖。回调错误会在 Spark 实际计算结果时
+抛出。`transform()` 保留输入 CRS；需要感知 CRS 的重投影时，请使用 `to_crs()`。
 
 `hilbert_distance()` 使用原生 Spark 表达式，并让逐行排序键保持分布式执行。
 未提供 `total_bounds` 时，该方法会通过一次分布式聚合计算所有包围盒中点的

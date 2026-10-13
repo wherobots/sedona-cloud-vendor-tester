@@ -21,6 +21,8 @@
 
 The GeoPandas API for Apache Sedona provides a familiar GeoPandas interface that scales your geospatial analysis beyond single-node limitations. This API combines the intuitive GeoPandas DataFrame syntax with the distributed processing power of Apache Sedona on Apache Spark, enabling you to work with planetary-scale datasets using the same code patterns you already know.
 
+See the [API coverage reference](../api/geopandas-coverage.md) for supported methods, parameter limitations, and the coverage percentage.
+
 ## Overview
 
 ### What is the GeoPandas API for Apache Sedona?
@@ -239,6 +241,40 @@ intersects_result = left_df.sjoin(right_df, predicate="intersects")
 contains_result = left_df.sjoin(right_df, predicate="contains")
 ```
 
+### Nearest point joins
+
+`GeoDataFrame.sjoin_nearest`, `sedona.spark.geopandas.sjoin_nearest`, and
+`sedona.spark.geopandas.tools.sjoin_nearest` use Sedona's distributed KNN join.
+This initial implementation supports **point inputs and inner joins**:
+
+```python
+nearest = left_points.sjoin_nearest(
+    right_points,
+    distance_col="distance",
+    max_distance=100,
+)
+```
+
+The result retains the left geometry, CRS and index, the right index, and both
+frames' attributes. Overlapping attributes receive `_left` and `_right`
+suffixes. Null and empty geometries do not match. Distances are planar, use
+CRS units, and ignore Z; use a projected CRS for meaningful distance units.
+The optional positive finite `max_distance` filters nearest results after the
+search, rather than reducing the search radius. `distance_col` must be a new
+column. Output row order is unspecified.
+
+**Ties follow Sedona configuration, not GeoPandas' all-ties guarantee.**
+`spark.sedona.join.knn.includeTieBreakers` defaults to `false`, choosing one
+nearest candidate with unspecified tie selection. Setting it to `true`
+includes equidistant candidates, but distinct rows with identical candidate
+geometries can still be omitted. This API does not change the session setting.
+
+Only `how="inner"`, `exclusive=False`, default suffixes, unique flat string
+columns and single-level indexes are supported. Duplicate index values are
+allowed. Unsupported options, non-point non-empty geometries and ambiguous
+output column names raise explicit errors. Input validation evaluates scalar
+summaries on Spark; geometry rows remain distributed.
+
 ### Coordinate Reference System Operations
 
 Transform geometries between different coordinate reference systems:
@@ -315,6 +351,7 @@ The GeoPandas API for Apache Sedona implements the most commonly used GeoSeries 
 - `clip()` - Clip geometries with scalar, rectangular, or distributed masks
 - `overlay()` - Distributed frame overlay with all five GeoPandas modes
 - `buffer()` - Geometric buffering
+- `transform()` - Apply coordinate-array callbacks in distributed executor batches
 - `distance()` - Distance calculations
 - `intersects()`, `contains()`, `within()` - Spatial predicates
 - `geom_equals_identical()` - Exact structural equality across every stored
@@ -340,6 +377,7 @@ The GeoPandas API for Apache Sedona implements the most commonly used GeoSeries 
 ### Spatial Operations
 
 - `buffer()` - Geometric buffering
+- `transform()` - Apply coordinate-array callbacks in distributed executor batches
 - `distance()` - Distance calculations
 - `intersects()`, `contains()`, `within()` - Spatial predicates
 - `intersection()` - Geometric intersection
@@ -421,6 +459,25 @@ and original geometry. The 100,000-coordinate admission limit per geometry
 is not a memory guarantee: long rings can exhaust executor memory below that
 limit. No geometry arrays for the full coverage or whole neighborhoods are
 collected.
+
+`transform(transformation, include_z=False)` is available since v2.0.0 and
+requires Spark >=3.5 and Shapely >=2.0 on the driver and workers. It lazily
+applies a serializable callback to NumPy coordinate arrays in executor batches,
+preserving the index, CRS metadata, per-row SRIDs, nulls, and empty geometries.
+Calling it on a GeoDataFrame transforms the active geometry column and returns
+a GeoSeries.
+
+Unlike local GeoPandas, the callback sees one Spark batch at a time rather than
+the entire GeoSeries. Use deterministic, coordinate-wise callbacks such as
+`lambda coords: coords + [1, 2]`. A callback such as
+`lambda coords: coords - coords.mean(axis=0)` centers each batch separately,
+so its result can change with partitioning or batch size. Compute any required
+global statistics separately with a distributed aggregation and pass the
+resulting constants to the callback. Spark may execute callbacks more than
+once; results must not depend on mutable state. Sedona cannot detect such
+batch dependencies automatically. Callback errors surface when Spark evaluates
+the result. Use `to_crs()` for CRS-aware reprojection, since `transform()` keeps
+the input CRS.
 
 `hilbert_distance()` keeps its per-row ordering keys distributed and uses only
 native Spark expressions. When `total_bounds` is omitted, one distributed

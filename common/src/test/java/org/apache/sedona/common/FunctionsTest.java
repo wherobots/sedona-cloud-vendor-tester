@@ -2330,6 +2330,35 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void sphereAndSpheroidDistanceEmptyGeometries() throws ParseException {
+    Geometry point = GEOMETRY_FACTORY.createPoint(new Coordinate(0, 0));
+    Geometry[] empties = {
+      wktReader.read("POINT EMPTY"),
+      wktReader.read("LINESTRING EMPTY"),
+      wktReader.read("POLYGON EMPTY"),
+      wktReader.read("MULTIPOLYGON EMPTY"),
+      wktReader.read("GEOMETRYCOLLECTION EMPTY"),
+      wktReader.read("GEOMETRYCOLLECTION (POINT EMPTY)")
+    };
+
+    // Like the planar Functions.distance, return null if either geometry is empty
+    for (Geometry empty : empties) {
+      assertNull(Haversine.distance(point, empty));
+      assertNull(Haversine.distance(empty, point));
+      assertNull(Haversine.distance(point, empty, 6378137.0));
+      assertNull(Spheroid.distance(point, empty));
+      assertNull(Spheroid.distance(empty, point));
+      assertNull(Haversine.distance(empty, empty));
+      assertNull(Spheroid.distance(empty, empty));
+    }
+
+    // A geometry with an empty component is not empty, so it is still measured
+    Geometry partiallyEmpty = wktReader.read("GEOMETRYCOLLECTION (POLYGON EMPTY, POINT (1 0))");
+    assertEquals(111319.49079327357, Spheroid.distance(point, partiallyEmpty), 0.1);
+    assertEquals(111195.06627089888, Haversine.distance(point, partiallyEmpty), 0.1);
+  }
+
+  @Test
   public void spheroidArea() {
     Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(90, 0));
     assertEquals(0, Spheroid.area(point), 0.1);
@@ -3479,6 +3508,43 @@ public class FunctionsTest extends TestBase {
     assertNotEquals(first, second);
     assertEquals(first, first2);
     assertEquals(second, second2);
+  }
+
+  @Test
+  public void geometryNIsOneBased() throws ParseException {
+    // PostGIS semantics: n = 1 is the first element; 0, negatives and n > N are null.
+    Geometry multiPoint = geomFromWKT("MULTIPOINT ((1 1), (2 2), (3 3))", 4326);
+    assertEquals("POINT (1 1)", Functions.asWKT(Functions.geometryN(multiPoint, 1)));
+    assertEquals("POINT (3 3)", Functions.asWKT(Functions.geometryN(multiPoint, 3)));
+    assertEquals(4326, Functions.geometryN(multiPoint, 1).getSRID());
+    assertNull(Functions.geometryN(multiPoint, 0));
+    assertNull(Functions.geometryN(multiPoint, -1));
+    assertNull(Functions.geometryN(multiPoint, 4));
+
+    // A non-collection is its own first geometry.
+    Geometry point = geomFromWKT("POINT (1 1)", 0);
+    assertEquals("POINT (1 1)", Functions.asWKT(Functions.geometryN(point, 1)));
+    assertNull(Functions.geometryN(point, 0));
+    assertNull(Functions.geometryN(point, 2));
+  }
+
+  @Test
+  public void interiorRingNIsOneBased() throws ParseException {
+    // PostGIS semantics: n = 1 is the first hole; 0, negatives and n > N are null.
+    Geometry polygon =
+        geomFromWKT(
+            "POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (1 1, 1 2, 2 2, 2 1, 1 1), (4 4, 4 5, 5 5, 5 4, 4 4))",
+            0);
+    assertEquals(
+        "LINESTRING (1 1, 1 2, 2 2, 2 1, 1 1)",
+        Functions.asWKT(Functions.interiorRingN(polygon, 1)));
+    assertEquals(
+        "LINESTRING (4 4, 4 5, 5 5, 5 4, 4 4)",
+        Functions.asWKT(Functions.interiorRingN(polygon, 2)));
+    assertNull(Functions.interiorRingN(polygon, 0));
+    assertNull(Functions.interiorRingN(polygon, -1));
+    assertNull(Functions.interiorRingN(polygon, 3));
+    assertNull(Functions.interiorRingN(geomFromWKT("POINT (0 0)", 0), 1));
   }
 
   @Test

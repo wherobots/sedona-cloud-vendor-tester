@@ -642,7 +642,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         "RS_Metadata(raster) as metadata")
     }
 
-    it("Passed RS_Union") {
+    it("Passed RS_Stack") {
       val inputDf = Seq(
         (
           Seq(13, 80, 49, 15, 4, 46, 47, 94, 58, 37, 6, 22, 98, 26, 78, 66, 86, 79, 5, 65, 7, 12,
@@ -657,7 +657,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         "RS_AddBandFromArray(RS_MakeEmptyRaster(1, 4, 6, 1, -1, 1, 1, 0, 0, 0), band3, 1) as raster2",
         "RS_AddBandFromArray(RS_AddBandFromArray(RS_MakeEmptyRaster(2, 4, 6, 1, -1, 1, 1, 0, 0, 0), band1, 1), band3, 2) as raster3")
 
-      var actualDf = df.selectExpr("RS_Union(raster1, raster2) as actualRaster")
+      var actualDf = df.selectExpr("RS_Stack(raster1, raster2) as actualRaster")
 
       var actualNumBands = actualDf.selectExpr("RS_NumBands(actualRaster)").first().getInt(0)
       var expectedNumBands = 3
@@ -674,7 +674,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         df,
         "RS_Metadata(raster1) as metadata")
 
-      actualDf = df.selectExpr("RS_Union(raster1, raster2, raster3) as actualRaster")
+      actualDf = df.selectExpr("RS_Stack(raster1, raster2, raster3) as actualRaster")
 
       actualNumBands = actualDf.selectExpr("RS_NumBands(actualRaster)").first().getInt(0)
       expectedNumBands = 5
@@ -694,7 +694,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         "RS_Metadata(raster1) as metadata")
 
       actualDf = df.selectExpr(
-        "RS_Union(raster1, raster2, raster3, raster1, raster2, raster3, raster1) as actualRaster")
+        "RS_Stack(raster1, raster2, raster3, raster1, raster2, raster3, raster1) as actualRaster")
 
       actualNumBands = actualDf.selectExpr("RS_NumBands(actualRaster)").first().getInt(0)
       expectedNumBands = 12
@@ -816,8 +816,10 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
           "RS_BandAsArray(RS_SetValues(raster, 1, ST_GeomFromWKT('POINT(2 -2)'), 25), 1)")
         .first()
         .getSeq(0)
-      expected = Seq(25.0, 25.0, 0.0, 0.0, 0.0, 25.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+      // A point on a grid corner burns only the half-open cell after both grid lines, as in GDAL
+      // (rasterio), not the four cells that meet at the corner.
+      expected = Seq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       assert(expected.equals(actual))
 
       actual = inputDf
@@ -825,8 +827,9 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
           "RS_BandAsArray(RS_SetValues(raster, 1, ST_GeomFromWKT('MULTIPOINT((2 -2), (2 -1), (3 -3))'), 400), 1)")
         .first()
         .getSeq(0)
-      expected = Seq(400.0, 400.0, 0.0, 0.0, 0.0, 400.0, 400.0, 400.0, 0.0, 0.0, 0.0, 400.0,
-        400.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+      // One cell per point: (2 -2) and (3 -3) sit on grid corners and (2 -1) on the top edge.
+      expected = Seq(0.0, 400.0, 0.0, 0.0, 0.0, 0.0, 400.0, 0.0, 0.0, 0.0, 0.0, 0.0, 400.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       assert(expected.equals(actual))
 
       actual = inputDf
@@ -895,7 +898,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       assertNull(sparkSession.sql("SELECT RS_SetBandNoDataValue(null, -999)").first().get(0))
     }
 
-    it("Passed RS_SetBandNoDataValue replacement preserves other bands") {
+    it("Passed RS_ReplaceBandNoDataValue preserves other bands") {
       val input =
         Seq((Seq(1.25, 5.0, 3.0, 4.0), Seq(11.0, 5.0, 13.0, 14.0), Seq(21.0, 22.0, 5.0, 24.5)))
           .toDF("band1", "band2", "band3")
@@ -903,9 +906,9 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         "RS_AddBandFromArray(RS_AddBandFromArray(RS_AddBandFromArray(" +
           "RS_MakeEmptyRaster(3, 'd', 2, 2, 0, 2, 1, -1, 0, 0, 4326), " +
           "band1, 1, 5d), band2, 2, 13d), band3, 3, 24.5d) AS raster")
-      // Collect the raster itself to cover the four-argument SQL binding and serialization.
+      // Collect the raster itself to cover the SQL binding and serialization.
       val result = raster
-        .selectExpr("RS_SetBandNoDataValue(raster, 2, -999d, true)")
+        .selectExpr("RS_ReplaceBandNoDataValue(raster, 2, -999d)")
         .first()
         .getAs[GridCoverage2D](0)
       assert(MapAlgebra.bandAsArray(result, 1).toSeq == Seq(1.25, 5.0, 3.0, 4.0))
@@ -914,6 +917,40 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       assertEquals(5.0, RasterBandAccessors.getBandNoDataValue(result, 1), 0)
       assertEquals(-999.0, RasterBandAccessors.getBandNoDataValue(result, 2), 0)
       assertEquals(24.5, RasterBandAccessors.getBandNoDataValue(result, 3), 0)
+    }
+
+    it("RS_ReplaceBandNoDataValue keeps the same pixels as no-data (docs example)") {
+      val counts = sparkSession
+        .sql("""SELECT
+          |  RS_Count(r, 1, true) AS before,
+          |  RS_Count(RS_ReplaceBandNoDataValue(r, 1, -9999), 1, true) AS after,
+          |  RS_BandNoDataValue(RS_ReplaceBandNoDataValue(r, 1, -9999), 1) AS nodata
+          |FROM (SELECT RS_AddBandFromArray(
+          |  RS_MakeEmptyRaster(1, 'd', 2, 2, 0, 2, 1), array(0d, 1d, 0d, 2d), 1, 0d) AS r)
+          |""".stripMargin)
+        .first()
+      assertEquals(2L, counts.getLong(0))
+      assertEquals(2L, counts.getLong(1))
+      assertEquals(-9999.0, counts.getDouble(2), 0)
+    }
+
+    it("RS_ReplaceBandNoDataValue requires an existing no-data value") {
+      val error = intercept[Exception] {
+        sparkSession
+          .sql("SELECT RS_ReplaceBandNoDataValue(" +
+            "RS_MakeEmptyRaster(1, 'd', 2, 2, 0, 2, 1, -1, 0, 0, 4326), 1, -999d)")
+          .first()
+      }
+      assert(error.getMessage.contains("no no-data value to replace"))
+    }
+
+    it("RS_ReplaceBandNoDataValue with a null argument returns null") {
+      assertNull(
+        sparkSession
+          .sql("SELECT RS_ReplaceBandNoDataValue(" +
+            "RS_MakeEmptyRaster(1, 'd', 2, 2, 0, 2, 1, -1, 0, 0, 4326), 1, null)")
+          .first()
+          .get(0))
     }
 
     it("Passed RS_SetBandNoDataValue clearing a band other than band 1") {
@@ -1014,7 +1051,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
     it("Passed RS_Value with raster and coordinates") {
       val df = sparkSession.read.format("binaryFile").load(resourceFolder + "raster/test1.tiff")
       val result =
-        df.selectExpr("RS_Value(RS_FromGeoTiff(content), 4, 4, 1)").first().getDouble(0)
+        df.selectExpr("RS_Value(RS_FromGeoTiff(content), 5, 5, 1)").first().getDouble(0)
       assert(result == 123d)
     }
 
@@ -1086,7 +1123,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
     it("Passed RS_Values with raster and Grid Coordinates") {
       val df = sparkSession.read.format("binaryFile").load(resourceFolder + "raster/test1.tiff")
       val result = df
-        .selectExpr("RS_Values(RS_FromGeoTiff(content), array(1,2), array(3,2), 1)")
+        .selectExpr("RS_Values(RS_FromGeoTiff(content), array(2,3), array(4,3), 1)")
         .first()
         .getList[Double](0)
 
@@ -1728,7 +1765,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       assertEquals(expected, actual)
     }
 
-    it("Passed RS_Union_Aggr") {
+    it("Passed RS_Stack_Aggr") {
       var df = sparkSession.read
         .format("binaryFile")
         .load(resourceFolder + "raster/test1.tiff")
@@ -1747,7 +1784,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
         .load(resourceFolder + "raster/test1.tiff")
         .selectExpr("RS_FromGeoTiff(content) as raster")
 
-      df = df.selectExpr("RS_Union_aggr(raster, index) as rasters")
+      df = df.selectExpr("RS_Stack_aggr(raster, index) as rasters")
 
       val actualBands = df.selectExpr("RS_NumBands(rasters)").first().get(0)
       val expectedBands = 3
@@ -1760,7 +1797,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       assertTrue(expectedMetadata.equals(actualMetadata))
     }
 
-    it("Passed multi-band RS_Union_Aggr") {
+    it("Passed multi-band RS_Stack_Aggr") {
       var df = sparkSession.read
         .format("binaryFile")
         .load(resourceFolder + "raster/test4.tiff")
@@ -1798,7 +1835,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       // Aggregate rasters based on their indexes to create two separate 2-banded rasters
       var aggregatedDF1 = df
         .groupBy("group")
-        .agg(expr("RS_Union_Aggr(raster, index) as multi_band_raster"))
+        .agg(expr("RS_Stack_Aggr(raster, index) as multi_band_raster"))
         .orderBy("group")
       aggregatedDF1 = aggregatedDF1.withColumn("meta", expr("RS_MetaData(multi_band_raster)"))
       aggregatedDF1 = aggregatedDF1
@@ -1807,7 +1844,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
 
       // Aggregate rasters based on their group to create one 4-banded raster
       var aggregatedDF2 =
-        aggregatedDF1.selectExpr("RS_Union_Aggr(multi_band_raster, group) as raster")
+        aggregatedDF1.selectExpr("RS_Stack_Aggr(multi_band_raster, group) as raster")
       aggregatedDF2 = aggregatedDF2.withColumn("meta", expr("RS_MetaData(raster)"))
       aggregatedDF2 = aggregatedDF2
         .withColumn("summary1", expr("RS_SummaryStatsALl(raster, 1)"))
@@ -1922,8 +1959,14 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
       // polygon vertex also sits exactly on a pixel corner (coordinates are multiples of the
       // 0.25-degree pixel size), and cells the boundary merely touches at such a corner point are
       // not burned (GH-3120), which trims twelve pixels against the pre-GH-3120 count. The count is
-      // direction-independent: rasterizing the ring in reverse order yields the same 14655.
-      assertEquals(14655.0, actual)
+      // direction-independent: rasterizing the ring in reverse order yields the same count.
+      //
+      // The right edge (x = -155.25) and the bottom edge (y = 40.25) lie exactly on grid lines. They
+      // touch the column and row beyond them but overlap none of their area, so, as in GDAL, those
+      // 289 cells (190 + 100 - 1 shared corner) are not burned (GH-3425). GDAL (rasterio,
+      // all_touched=True) counts 14357 here; the remaining nine cells are near-corner cells along
+      // the steep left edge, a separate difference.
+      assertEquals(14366.0, actual)
 
       actual =
         df.selectExpr("RS_ZonalStats(raster, geom, 1, 'mean', false, false)").first().get(0)
@@ -2417,7 +2460,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
           .isNaN)
 
       // NaN nodata pixels can be replaced by a numeric nodata value
-      val replaced = df.selectExpr("RS_SetBandNoDataValue(raster, 1, -9999, true) as raster")
+      val replaced = df.selectExpr("RS_ReplaceBandNoDataValue(raster, 1, -9999) as raster")
       assertEquals(
         -9999.0,
         replaced.selectExpr("RS_BandNoDataValue(raster)").first().getDouble(0),
@@ -2920,7 +2963,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
 
       val expectedFirstVal = 60.95357131958008
       val actualFirstVal =
-        rasterDf.selectExpr("RS_Value(raster, 0, 0, 1) as raster").first().getDouble(0)
+        rasterDf.selectExpr("RS_Value(raster, 1, 1, 1) as raster").first().getDouble(0)
       assertEquals(expectedFirstVal, actualFirstVal, 1e-6)
     }
 
@@ -2937,7 +2980,7 @@ class rasteralgebraTest extends TestBaseScala with BeforeAndAfter with GivenWhen
 
       val expectedFirstVal = 60.95357131958008
       val actualFirstVal =
-        rasterDf.selectExpr("RS_Value(raster, 0, 0, 1) as raster").first().getDouble(0)
+        rasterDf.selectExpr("RS_Value(raster, 1, 1, 1) as raster").first().getDouble(0)
       assertEquals(expectedFirstVal, actualFirstVal, 1e-6)
     }
 

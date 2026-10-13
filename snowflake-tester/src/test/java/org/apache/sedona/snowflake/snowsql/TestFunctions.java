@@ -488,7 +488,7 @@ public class TestFunctions extends TestBase {
   public void test_ST_GeometryN() {
     registerUDF("ST_GeometryN", byte[].class, int.class);
     verifySqlSingleRes(
-        "select sedona.ST_AsText(sedona.ST_GeometryN(sedona.ST_GeomFromText('MULTIPOINT((10 40), (40 30), (20 20), (30 10))'), 1))",
+        "select sedona.ST_AsText(sedona.ST_GeometryN(sedona.ST_GeomFromText('MULTIPOINT((10 40), (40 30), (20 20), (30 10))'), 2))",
         "POINT (40 30)");
   }
 
@@ -535,7 +535,7 @@ public class TestFunctions extends TestBase {
   public void test_ST_InteriorRingN() {
     registerUDF("ST_InteriorRingN", byte[].class, int.class);
     verifySqlSingleRes(
-        "select sedona.ST_AsText(sedona.ST_InteriorRingN(sedona.ST_GeomFromText('POLYGON((0 0, 0 5, 5 5, 5 0, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1), (1 3, 2 3, 2 4, 1 4, 1 3), (3 3, 4 3, 4 4, 3 4, 3 3))'), 0))",
+        "select sedona.ST_AsText(sedona.ST_InteriorRingN(sedona.ST_GeomFromText('POLYGON((0 0, 0 5, 5 5, 5 0, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1), (1 3, 2 3, 2 4, 1 4, 1 3), (3 3, 4 3, 4 4, 3 4, 3 3))'), 1))",
         "LINESTRING (1 1, 2 1, 2 2, 1 2, 1 1)");
   }
 
@@ -722,12 +722,9 @@ public class TestFunctions extends TestBase {
     verifySqlSingleRes("select sedona.ST_AsText(sedona.ST_MakePoint(1, 2))", "POINT (1 2)");
     registerUDF("ST_MakePoint", double.class, double.class, double.class);
     verifySqlSingleRes("select sedona.ST_AsText(sedona.ST_MakePoint(1, 2, 3))", "POINT Z(1 2 3)");
-    // TODO: fix this when https://github.com/locationtech/jts/pull/734 gets merged.
-    // Sedona Snowflake uses WKB to serialize geometries, and JTS's WKBReader and Writer ignores M
-    // values.
     registerUDF("ST_MakePoint", double.class, double.class, double.class, double.class);
     verifySqlSingleRes(
-        "select sedona.ST_AsText(sedona.ST_MakePoint(1, 2, 3, 4))", "POINT Z(1 2 3)");
+        "select sedona.ST_AsText(sedona.ST_MakePoint(1, 2, 3, 4))", "POINT ZM(1 2 3 4)");
   }
 
   @Test

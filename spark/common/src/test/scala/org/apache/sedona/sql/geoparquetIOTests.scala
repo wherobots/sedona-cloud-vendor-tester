@@ -25,6 +25,7 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.SparkException
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.execution.datasources.geoparquet.{Covering, GeoParquetMetaData, GeometryFieldMetaData}
@@ -44,6 +45,7 @@ import org.scalatest.BeforeAndAfterAll
 
 import java.io.File
 import java.nio.ByteOrder
+import java.nio.file.Files
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
 import java.time.LocalDateTime
@@ -61,6 +63,12 @@ class geoparquetIOTests extends TestBaseScala with BeforeAndAfterAll {
   val geoparquetoutputlocation: String = resourceFolder + "geoparquet/geoparquet_output/"
   val overtureBBOX: String = resourceFolder + "geoparquet/overture/bbox.geoparquet"
   override def afterAll(): Unit = FileUtils.deleteDirectory(new File(geoparquetoutputlocation))
+
+  private def withEmptyDirectory(f: String => Unit): Unit = {
+    val dir = Files.createTempDirectory("geoparquet-empty").toFile
+    try f(dir.getPath)
+    finally FileUtils.deleteDirectory(dir)
+  }
 
   describe("GeoParquet IO tests") {
     it("GEOPARQUET Test example1 i.e. naturalearth_lowers dataset's Read and Write") {
@@ -237,6 +245,40 @@ class geoparquetIOTests extends TestBaseScala with BeforeAndAfterAll {
       assert(rows(0).getAs[AnyRef]("g1").isInstanceOf[Geometry])
     }
 
+    it("GeoParquet read without a path should say that no path was given") {
+      // PySpark's load(None) calls the JVM load() with no paths.
+      val e = intercept[AnalysisException] {
+        sparkSession.read.format("geoparquet").load()
+      }
+      assert(e.getMessage.contains("no input files found"))
+      assert(e.getMessage.contains("no path was given"))
+    }
+
+    it("GeoParquet read of an empty directory should say that no input files were found") {
+      withEmptyDirectory { dir =>
+        val e = intercept[AnalysisException] {
+          sparkSession.read.format("geoparquet").load(dir)
+        }
+        assert(e.getMessage.contains("no input files found"))
+      }
+    }
+
+    it("GeoParquet read of an empty directory with a user-specified schema returns no rows") {
+      withEmptyDirectory { dir =>
+        val df = sparkSession.read.format("geoparquet").schema("id INT").load(dir)
+        assert(df.count() == 0)
+      }
+    }
+
+    it("GeoParquet read of a glob that matches nothing should report the missing path") {
+      withEmptyDirectory { dir =>
+        val e = intercept[AnalysisException] {
+          sparkSession.read.format("geoparquet").load(dir + "/*.parquet")
+        }
+        assert(e.getMessage.contains("Path does not exist"))
+      }
+    }
+
     it("GeoParquet save should work with empty dataframes") {
       val schema = StructType(
         Seq(
@@ -259,6 +301,25 @@ class geoparquetIOTests extends TestBaseScala with BeforeAndAfterAll {
         // bbox-based file pruning in downstream readers). See issue #2880.
         assert((geo \ "columns" \ "g" \ "bbox") == org.json4s.JNothing)
       }
+    }
+
+    it("GeoParquet save should fail before running any task when there is no geometry column") {
+      val df = sparkSession
+        .range(10)
+        .selectExpr("id", "CAST(id AS STRING) AS severity")
+        .repartition(2)
+      val geoParquetSavePath = geoparquetoutputlocation + "/no_geometry.parquet"
+      FileUtils.deleteQuietly(new File(geoParquetSavePath))
+
+      // A failure inside a write task would reach us wrapped in a SparkException, after the job
+      // launched and the task was retried; a plan-time failure is thrown as is.
+      val e = intercept[IllegalArgumentException] {
+        df.write.format("geoparquet").mode("overwrite").save(geoParquetSavePath)
+      }
+      assert(e.getMessage.contains("GeoParquet requires at least one geometry column"))
+      assert(e.getMessage.contains("severity"))
+      assert(e.getMessage.contains("format(\"parquet\")"))
+      assert(!new File(geoParquetSavePath).exists())
     }
 
     it("GeoParquet save should work with snake_case column names") {
@@ -1411,10 +1472,12 @@ class geoparquetIOTests extends TestBaseScala with BeforeAndAfterAll {
         SELECT ARRAY(STRUCT(ST_POINT(1.0, 1.1) AS geometry)) AS nested_geom_array
       """)
 
-      // Writing nested geometry to GeoParquet should fail according to the specification
-      assertThrows[SparkException] {
+      // Writing nested geometry to GeoParquet should fail according to the specification. There
+      // is no geometry column at the root, so it fails when the write is planned.
+      val e = intercept[IllegalArgumentException] {
         df.write.mode("overwrite").format("geoparquet").save(testPath)
       }
+      assert(e.getMessage.contains("GeoParquet requires at least one geometry column"))
     }
 
     it("should handle deeply nested arrays with geometry UDT") {

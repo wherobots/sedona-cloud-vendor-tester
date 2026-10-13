@@ -107,10 +107,9 @@ public class RasterConstructorsTest extends RasterTestBase {
     // (GH-3120).
     double[] expected =
         new double[] {
-          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0,
-          3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3093151.0,
-          3093151.0, 3093151.0, 3093151.0, 3.0, 3.0, 3093151.0, 3093151.0, 3093151.0, 3093151.0,
-          3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0
+          3093151.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3093151.0,
+          3093151.0, 3.0, 3.0, 3093151.0, 3093151.0, 3093151.0, 3093151.0, 3.0, 3093151.0,
+          3093151.0, 3093151.0, 3093151.0, 3093151.0
         };
 
     assertArrayEquals(expected, actual, 0.1d);
@@ -331,17 +330,19 @@ public class RasterConstructorsTest extends RasterTestBase {
         };
     assertArrayEquals(expected, actual, 0.1d);
 
-    // MultiPoints
+    // MultiPoints. Each point burns the one half-open cell that contains it, as in GDAL: (5 -5)
+    // and (15 -15) sit on grid corners, so they burn the cell after both grid lines in pixel order
+    // (below the corner on the north-up raster, above it on the bottom-up one). The cropped output
+    // is the extent of those cells.
     geom = Constructors.geomFromWKT("MULTIPOINT ((5 -5), (10 -10), (15 -15))", 0);
     rasterized = RasterConstructors.asRaster(geom, raster, "d", false, 3093151, 3d);
     actual = MapAlgebra.bandAsArray(rasterized, 1);
 
     expected =
         new double[] {
-          3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0,
-          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0,
-          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0,
-          3.0, 3.0, 3093151.0, 3093151.0
+          3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0,
+          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0,
+          3.0, 3.0, 3093151.0
         };
     assertArrayEquals(expected, actual, 0.1d);
 
@@ -350,10 +351,9 @@ public class RasterConstructorsTest extends RasterTestBase {
     actual = MapAlgebra.bandAsArray(rasterized, 1);
     expected =
         new double[] {
-          3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0,
-          3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3.0, 3.0, 3.0,
-          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0,
-          3093151.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0
+          3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0,
+          3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3093151.0, 3.0,
+          3.0, 3.0, 3.0, 3.0
         };
 
     assertArrayEquals(expected, actual, 0.1d);
@@ -363,9 +363,8 @@ public class RasterConstructorsTest extends RasterTestBase {
 
     expected =
         new double[] {
-          1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-          0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0
+          1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0
         };
 
     assertArrayEquals(expected, actual, 0.1d);
@@ -375,19 +374,20 @@ public class RasterConstructorsTest extends RasterTestBase {
     actual = MapAlgebra.bandAsArray(rasterized, 1);
     expected =
         new double[] {
-          0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-          1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
+          0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
         };
     assertArrayEquals(expected, actual, 0.1d);
 
     // Point
+    // A point on a grid corner burns only the cell after both grid lines, so the cropped output is
+    // that single cell on both the north-up and the bottom-up raster.
     geom = Constructors.geomFromWKT("POINT (5 -5)", 0);
     rasterized = RasterConstructors.asRaster(geom, raster, "d", false, 3093151, 3d);
 
     actual = MapAlgebra.bandAsArray(rasterized, 1);
 
-    expected = new double[] {3093151.0, 3093151.0, 3093151.0, 3093151.0};
+    expected = new double[] {3093151.0};
     assertArrayEquals(expected, actual, 0.1d);
 
     // Test bottom-up raster case
@@ -397,7 +397,7 @@ public class RasterConstructorsTest extends RasterTestBase {
 
     rasterized = RasterConstructors.asRaster(geom, raster, "d", false, 1d, null);
     actual = MapAlgebra.bandAsArray(rasterized, 1);
-    expected = new double[] {1.0, 1.0, 1.0, 1.0};
+    expected = new double[] {1.0};
     assertArrayEquals(expected, actual, 0.1d);
 
     // Test bottom-up raster case
@@ -601,20 +601,84 @@ public class RasterConstructorsTest extends RasterTestBase {
   }
 
   @Test
-  public void testAsRasterRejectsNonFiniteNoDataValue() throws FactoryException, ParseException {
-    // NaN and +/-Infinity are rejected as a nodata value on float ('F') and double ('D') bands.
-    // NaN is the codebase's internal "no nodata" sentinel, so it would be silently dropped rather
-    // than recorded (leaving the NaN-filled background reading back as data); an infinite value is
-    // not a valid GeoTools category bound and previously crashed deep in GeoTools with
-    // "Range [Infinity .. Infinity] is not valid". Both are now rejected up front with a clear
-    // error that names the offending value and pixel type.
+  public void testAsRasterAcceptsNaNNoDataValue() throws FactoryException, ParseException {
+    GridCoverage2D raster = RasterConstructors.makeEmptyRaster(1, "D", 3, 3, 0, 3, 1, -1, 0, 0, 0);
+    Geometry geom =
+        Constructors.geomFromWKT(
+            "POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))", 0);
+
+    for (String pixelType : new String[] {"F", "D"}) {
+      for (boolean useGeometryExtent : new boolean[] {true, false}) {
+        GridCoverage2D result =
+            RasterConstructors.asRaster(
+                geom, raster, pixelType, false, 1d, Double.NaN, useGeometryExtent);
+        assertNaNNoDataBackground(result);
+      }
+    }
+  }
+
+  @Test
+  public void testAsRasterInheritsNaNNoDataValue() throws FactoryException, ParseException {
+    GridCoverage2D raster = RasterConstructors.makeEmptyRaster(1, "D", 3, 3, 0, 3, 1, -1, 0, 0, 0);
+    GridCoverage2D reference = RasterBandEditors.setBandNoDataValue(raster, 1, Double.NaN);
+    Geometry geom =
+        Constructors.geomFromWKT(
+            "POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))", 0);
+
+    for (String pixelType : new String[] {"F", "D"}) {
+      assertNaNNoDataBackground(RasterConstructors.asRaster(geom, reference, pixelType));
+    }
+    for (String pixelType : new String[] {"B", "US", "S", "I"}) {
+      Assert.assertThrows(
+          IllegalArgumentException.class,
+          () -> RasterConstructors.asRaster(geom, reference, pixelType));
+    }
+  }
+
+  private static void assertNaNNoDataBackground(GridCoverage2D raster) {
+    assertArrayEquals(
+        new double[] {1, 1, 1, 1, Double.NaN, 1, 1, 1, 1}, MapAlgebra.bandAsArray(raster, 1), 0d);
+    assertEquals(Double.valueOf(Double.NaN), RasterBandAccessors.getBandNoDataValue(raster, 1));
+    assertEquals(8L, RasterBandAccessors.getCount(raster, 1, true));
+  }
+
+  @Test
+  public void testAsRasterRejectsInfiniteNoDataValue() throws FactoryException, ParseException {
+    GridCoverage2D raster = RasterConstructors.makeEmptyRaster(1, "D", 3, 3, 0, 3, 1, -1, 0, 0, 0);
+    Geometry geom = Constructors.geomFromWKT("POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0))", 0);
+    for (String pixelType : new String[] {"F", "D"}) {
+      for (double noData : new double[] {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+        Assert.assertThrows(
+            IllegalArgumentException.class,
+            () -> RasterConstructors.asRaster(geom, raster, pixelType, false, 1d, noData, false));
+      }
+    }
+  }
+
+  @Test
+  public void testAsRasterRejectsNonFiniteBurnValue() throws FactoryException, ParseException {
+    GridCoverage2D raster = RasterConstructors.makeEmptyRaster(1, "D", 3, 3, 0, 3, 1, -1, 0, 0, 0);
+    Geometry geom = Constructors.geomFromWKT("POLYGON ((0 0, 3 0, 3 3, 0 3, 0 0))", 0);
+    for (String pixelType : new String[] {"F", "D"}) {
+      for (double value :
+          new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+        Assert.assertThrows(
+            IllegalArgumentException.class,
+            () -> RasterConstructors.asRaster(geom, raster, pixelType, false, value, 0d, false));
+      }
+    }
+  }
+
+  @Test
+  public void testAsRasterRejectsNonFiniteNoDataValueOnIntegerBand()
+      throws FactoryException, ParseException {
     GridCoverage2D raster =
         RasterConstructors.makeEmptyRaster(1, "d", 7, 6, 100, 500, 2, -2, 0, 0, 0);
     Geometry geom =
         Constructors.geomFromWKT(
             "POLYGON ((100.5 499.5, 113.5 499.5, 113.5 488.5, 100.5 488.5, 100.5 499.5))", 0);
 
-    for (String pixelType : new String[] {"F", "D"}) {
+    for (String pixelType : new String[] {"B", "US", "S", "I"}) {
       for (double nonFinite :
           new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
         IllegalArgumentException error =
@@ -1044,19 +1108,17 @@ public class RasterConstructorsTest extends RasterTestBase {
     // GDAL burns it through a quirk of its scan order while Sedona burns only cells the boundary
     // passes through (GH-3120).
     double[] expected = {
-      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0,
-      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
-      5.0, 5.0, 612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
-      612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0,
-      612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 5.0,
-      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
-      5.0, 5.0, 5.0, 5.0, 5.0
+      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+      5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
+      612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 612028.0,
+      612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 612028.0, 612028.0, 612028.0,
+      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0,
+      5.0, 5.0, 5.0, 612028.0, 612028.0, 612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0,
+      5.0, 612028.0, 612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0,
+      612028.0, 612028.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0,
+      612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 612028.0, 612028.0,
+      5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 612028.0, 612028.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+      5.0, 5.0, 5.0
     };
     assertArrayEquals(expected, actual, 0.1d);
 
@@ -1456,7 +1518,7 @@ public class RasterConstructorsTest extends RasterTestBase {
       assertEquals(expectedMetadata[i], actualMetadata[i], 1e-5);
     }
 
-    double actualFirstGridVal = PixelFunctions.value(testRaster, 0, 0, 1);
+    double actualFirstGridVal = PixelFunctions.value(testRaster, 1, 1, 1);
     double expectedFirstGridVal = 60.95357131958008;
     assertEquals(expectedFirstGridVal, actualFirstGridVal, 1e-6);
   }
@@ -1470,7 +1532,7 @@ public class RasterConstructorsTest extends RasterTestBase {
       assertEquals(expectedMetadata[i], actualMetadata[i], 1e-5);
     }
 
-    double actualFirstGridVal = PixelFunctions.value(testRaster, 0, 0, 1);
+    double actualFirstGridVal = PixelFunctions.value(testRaster, 1, 1, 1);
     double expectedFirstGridVal = 60.95357131958008;
     assertEquals(expectedFirstGridVal, actualFirstGridVal, 1e-6);
   }

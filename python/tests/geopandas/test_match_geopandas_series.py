@@ -1260,7 +1260,7 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
             gpd_result = gpd.GeoSeries(geoms).maximum_inscribed_circle(
                 tolerance=tolerance
             )
-            self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+            self.check_inscribed_circles_match(sgpd_result, gpd_result, tolerance)
 
         # GeoPandas' own compatibility test uses row-wise zero and coarse
         # tolerances, including zero as the per-geometry automatic tolerance.
@@ -1271,7 +1271,29 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
         gpd_result = gpd.GeoSeries(geoms[:2]).maximum_inscribed_circle(
             tolerance=local_tolerance
         )
-        self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
+        self.check_inscribed_circles_match(sgpd_result, gpd_result, local_tolerance)
+
+    @staticmethod
+    def check_inscribed_circles_match(actual, expected, tolerance, min_tolerance=1e-2):
+        # Compare the center and the radius of each circle rather than the exact line,
+        # as GeoPandas' own test does. The radius line may end at any of several equally
+        # near boundary points, and the circle is only as precise as the tolerance:
+        # GEOS 3.14 (shapely 2.2) computes triangles and convex quadrilaterals exactly,
+        # while JTS 1.20 searches a grid until it is within the tolerance.
+        actual = actual.to_geopandas().sort_index()
+        expected = expected.sort_index()
+        pd.testing.assert_index_equal(actual.index, expected.index)
+        tolerances = np.broadcast_to(
+            np.nan_to_num(np.asarray(tolerance, dtype=float)), len(expected)
+        )
+        for a, e, t in zip(actual, expected, tolerances):
+            if a is None or e is None:
+                assert a is None and e is None
+                continue
+            t = max(t, min_tolerance)
+            center_distance = Point(a.coords[0]).distance(Point(e.coords[0]))
+            assert center_distance <= t, f"centers differ: {a.wkt} vs {e.wkt}"
+            assert abs(a.length - e.length) <= t, f"radii differ: {a.wkt} vs {e.wkt}"
 
     def test_minimum_bounding_radius(self):
         for geom in self.geoms:
@@ -1577,8 +1599,32 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
 
         self.check_sgpd_equals_gpd(sgpd_result, gpd_result)
 
-    def test_transform(self):
-        pass
+    @pytest.mark.skipif(
+        parse_version(pyspark.__version__) < parse_version("3.5.0")
+        or parse_version(gpd.__version__) < parse_version("1.0.0"),
+        reason="transform parity requires Spark>=3.5 and GeoPandas>=1.0",
+    )
+    @pytest.mark.parametrize("include_z", [False, True])
+    def test_transform(self, include_z):
+        geometries = [
+            self.points[2],
+            self.linestrings[2],
+            self.polygons[2],
+            self.multipoints[2],
+            self.multilinestrings[2],
+            self.multipolygons[1],
+            self.geomcollection[1],
+            Point(1, 2, 3),
+            LineString([(0, 0, 1), (2, 1, 4)]),
+            None,
+            Polygon(),
+        ]
+        transformation = lambda coords: coords * 2 + 1
+        expected = gpd.GeoSeries(geometries).transform(
+            transformation, include_z=include_z
+        )
+        actual = GeoSeries(geometries).transform(transformation, include_z=include_z)
+        self.check_sgpd_equals_gpd(actual, expected)
 
     @pytest.mark.parametrize("angle", [0, 45, 90, 180])
     @pytest.mark.parametrize(
@@ -1922,9 +1968,6 @@ class TestMatchGeopandasSeries(TestGeopandasBase):
 
     def test_crosses(self):
         for geom, geom2 in self.pairs:
-            if self.contains_any_geom_collection(geom, geom2):
-                continue
-
             # We explicitly specify align=True to quite warnings in geopandas, despite it being the default
             gpd_result = gpd.GeoSeries(geom).crosses(gpd.GeoSeries(geom2), align=True)
             sgpd_result = GeoSeries(geom).crosses(GeoSeries(geom2), align=True)

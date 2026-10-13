@@ -51,6 +51,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 from sedona.spark.sql.types import GeometryType
+from sedona.spark.sql.functions import sedona_vectorized_udf, SedonaUDFType
 
 from sedona.spark.sql import st_aggregates as sta
 from sedona.spark.sql import st_constructors as stc
@@ -1918,15 +1919,16 @@ class GeoSeries(GeoFrame, pspd.Series):
         raise NotImplementedError("This method is not implemented yet.")
 
     def get_geometry(self, index) -> "GeoSeries":
-        # Sedona errors on negative indexes, so we use a case statement to handle it ourselves.
+        # GeoPandas indexes are 0-based and may be negative, while ST_GeometryN is
+        # 1-based, so translate here: -1 is the last geometry.
         spark_expr = stf.ST_GeometryN(
             F.col("L"),
             F.when(
                 stf.ST_NumGeometries(F.col("L")) + F.col("R") < 0,
                 None,
             )
-            .when(F.col("R") < 0, stf.ST_NumGeometries(F.col("L")) + F.col("R"))
-            .otherwise(F.col("R")),
+            .when(F.col("R") < 0, stf.ST_NumGeometries(F.col("L")) + F.col("R") + 1)
+            .otherwise(F.col("R") + 1),
         )
 
         other, _ = self._make_series_of_val(index)
@@ -2091,10 +2093,10 @@ class GeoSeries(GeoFrame, pspd.Series):
         ring_count = stf.ST_NumInteriorRings(geometry)
         empty_rings = F.slice(stf.ST_Dump(geometry), 1, 0)
         rings = F.transform(
-            F.sequence(F.lit(0), ring_count - 1),
+            F.sequence(F.lit(1), ring_count),
             lambda index: stf.ST_InteriorRingN(geometry, index),
         )
-        # Spark creates a descending sequence for sequence(0, -1), so this guard
+        # Spark creates a descending sequence for sequence(1, 0), so this guard
         # is required to keep polygons without interior rings as an empty array.
         polygon_rings = F.when(ring_count > 0, rings).otherwise(empty_rings)
         spark_expr = F.when(
@@ -2728,8 +2730,30 @@ class GeoSeries(GeoFrame, pspd.Series):
         return self._query_geometry_column(spark_expr, returns_geom=True)
 
     def transform(self, transformation, include_z=False):
-        # Implementation of the abstract method.
-        raise NotImplementedError("This method is not implemented yet.")
+        if not callable(transformation):
+            raise TypeError("'transformation' must be callable")
+        if parse_version(pyspark.__version__) < parse_version("3.5.0"):
+            raise NotImplementedError("transform requires Spark 3.5 or newer")
+        if parse_version(shapely.__version__) < parse_version("2.0.0"):
+            raise ImportError("transform requires Shapely 2.0 or newer")
+
+        @sedona_vectorized_udf(
+            return_type=GeometryType(), udf_type=SedonaUDFType.GEO_SERIES
+        )
+        def transform_batch(batch: gpd.GeoSeries) -> gpd.GeoSeries:
+            return gpd.GeoSeries(
+                shapely.transform(
+                    np.asarray(batch.array), transformation, include_z=include_z
+                ),
+                index=batch.index,
+            )
+
+        # GeometryUDT's Python serializer does not retain SRIDs. Restore them
+        # from the input column without resolving CRS metadata on the driver.
+        transformed = stf.ST_SetSRID(
+            transform_batch(self.spark.column), stf.ST_SRID(self.spark.column)
+        )
+        return self._query_geometry_column(transformed, returns_geom=True)
 
     def rotate(self, angle, origin="center", use_radians=False) -> "GeoSeries":
         import math
@@ -2985,15 +3009,10 @@ class GeoSeries(GeoFrame, pspd.Series):
         return geom
 
     def crosses(self, other, align=None) -> pspd.Series:
-        # Sedona does not support GeometryCollection (errors), so we return NULL for now to avoid error.
         other_series, extended = self._make_series_of_val(other)
         align = False if extended else align
 
-        spark_expr = F.when(
-            (stf.ST_GeometryType(F.col("L")) == "ST_GeometryCollection")
-            | (stf.ST_GeometryType(F.col("R")) == "ST_GeometryCollection"),
-            None,
-        ).otherwise(stp.ST_Crosses(F.col("L"), F.col("R")))
+        spark_expr = stp.ST_Crosses(F.col("L"), F.col("R"))
         result = self._row_wise_operation(
             spark_expr,
             other_series,
