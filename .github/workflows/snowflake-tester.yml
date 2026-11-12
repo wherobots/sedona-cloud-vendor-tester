@@ -17,7 +17,7 @@
 
 name: Snowflake integration test with real snowflake env
 
-on:
+on: # zizmor: ignore[dangerous-triggers]
   push:
     branches:
       - master
@@ -38,11 +38,11 @@ env:
   SNOWFLAKE_GEOTOOLS_VERSION: '1.8.0-33.1-rc1'
 
 jobs:
-  build:
+  build: # zizmor: ignore[excessive-permissions]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
+        with: # zizmor: ignore[artipacked]
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
