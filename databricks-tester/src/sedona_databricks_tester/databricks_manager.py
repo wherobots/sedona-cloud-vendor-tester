@@ -30,6 +30,7 @@ from typing import Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.compute import (
+    AwsAttributes,
     DataSecurityMode,
     InitScriptInfo,
     RuntimeEngine,
@@ -367,6 +368,10 @@ class DatabricksManager:
             if config.get("runtime_engine"):
                 runtime_engine = RuntimeEngine(config["runtime_engine"])
 
+            aws_attributes = None
+            if config.get("aws_attributes"):
+                aws_attributes = AwsAttributes.from_dict(config["aws_attributes"])
+
             cluster_create_response = self.client.clusters.create(
                 spark_version=config["spark_version"],
                 cluster_name=cluster_name,
@@ -378,6 +383,7 @@ class DatabricksManager:
                 enable_elastic_disk=config.get("enable_elastic_disk", True),
                 data_security_mode=data_security_mode,
                 runtime_engine=runtime_engine,
+                aws_attributes=aws_attributes,
             )
 
             cluster_id = cluster_create_response.cluster_id
@@ -398,9 +404,13 @@ class DatabricksManager:
             raise
 
     def wait_for_cluster_ready(
-        self, cluster_id: str, timeout_minutes: int = 15
+        self, cluster_id: str, timeout_minutes: int = 30
     ) -> bool:
-        """Wait for cluster to be in RUNNING state."""
+        """Wait for cluster to be in RUNNING state.
+
+        A two-node test cluster usually takes 10-13 minutes to reach RUNNING, so
+        the default leaves room for a slow instance launch.
+        """
         timeout_seconds = timeout_minutes * 60
         start_time = time.time()
 
