@@ -83,7 +83,7 @@ jobs:
           SCALA_VERSION: ${{ matrix.scala }}
         run: |
           # Build Sedona with specific Spark and Scala versions
-          mvn clean package -DskipTests -Dspark=${SPARK_VERSION} -Dscala=${SCALA_VERSION} -pl spark-shaded -am
+          mvn clean package -DskipTests -Dspark="${SPARK_VERSION}" -Dscala="${SCALA_VERSION}" -pl spark-shaded -am
       - name: Copy Sedona JAR to artifacts directory
         run: |
           find spark-shaded/target -name "sedona-*.jar" -not -name "*-javadoc.jar" -not -name "*-sources.jar" -exec cp {} databricks-artifacts/tmp/ \;
@@ -92,14 +92,14 @@ jobs:
         run: |
           # Get the Sedona JAR path and version
           SEDONA_JAR_PATH=$(find databricks-artifacts/tmp -name "sedona-*.jar" | head -1)
-          SEDONA_VERSION=$(echo $SEDONA_JAR_PATH | sed 's/.*sedona-spark-shaded-\([^/]*\)\.jar/\1/')
+          SEDONA_VERSION=$(echo "$SEDONA_JAR_PATH" | sed 's/.*sedona-spark-shaded-\([^/]*\)\.jar/\1/')
           GEOTOOLS_JAR_PATH="databricks-artifacts/tmp/geotools-wrapper-${GEOTOOLS_VERSION}.jar"
 
           {
             echo "jar-path=${SEDONA_JAR_PATH}"
             echo "sedona-version=${SEDONA_VERSION}"
             echo "geotools-path=${GEOTOOLS_JAR_PATH}"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           echo "Built Sedona JAR: ${SEDONA_JAR_PATH}"
           echo "Sedona Version: ${SEDONA_VERSION}"
@@ -136,7 +136,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.10'
+          python-version: '3.11'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Download build artifacts
@@ -146,21 +146,21 @@ jobs:
           path: databricks-artifacts/tmp/
       - name: Download GeoTools wrapper
         run: |
-          curl -L "https://repo1.maven.org/maven2/org/datasyslab/geotools-wrapper/${GEOTOOLS_VERSION}/geotools-wrapper-${GEOTOOLS_VERSION}.jar" -o databricks-artifacts/tmp/geotools-wrapper-${GEOTOOLS_VERSION}.jar
+          curl -L "https://repo1.maven.org/maven2/org/datasyslab/geotools-wrapper/${GEOTOOLS_VERSION}/geotools-wrapper-${GEOTOOLS_VERSION}.jar" -o "databricks-artifacts/tmp/geotools-wrapper-${GEOTOOLS_VERSION}.jar"
       - name: Setup Databricks tester environment
         working-directory: databricks-tester
         run: |
-          source $HOME/.cargo/env
+          source "$HOME/.cargo/env"
           uv sync
       - name: Test Databricks connection
         working-directory: databricks-tester
         run: |
-          source $HOME/.cargo/env
+          source "$HOME/.cargo/env"
           uv run python -m sedona_databricks_tester test-connection
       - name: Run Databricks smoke tests
         working-directory: databricks-tester
         run: |
-          source $HOME/.cargo/env
+          source "$HOME/.cargo/env"
 
           # Generate unique session ID for this test run
           SESSION_ID="${{ github.run_id }}"
@@ -192,18 +192,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.10'
+          python-version: '3.11'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Setup Databricks tester environment
         working-directory: databricks-tester
         run: |
-          source $HOME/.cargo/env
+          source "$HOME/.cargo/env"
           uv sync
       - name: Cleanup Databricks resources
         working-directory: databricks-tester
         run: |
-          source $HOME/.cargo/env
+          source "$HOME/.cargo/env"
 
           # Use the same session ID as the test job
           SESSION_ID="${{ github.run_id }}"
