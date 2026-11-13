@@ -16,17 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.spark.sql.udf
+package org.apache.spark.sql
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, PythonUDF}
-import org.apache.spark.sql.catalyst.plans.logical.{BaseEvalPython, LogicalPlan}
-
-case class SedonaArrowEvalPython(
-    udfs: Seq[PythonUDF],
-    resultAttrs: Seq[Attribute],
-    child: LogicalPlan,
-    evalType: Int)
-    extends BaseEvalPython {
-  override protected def withNewChildInternal(newChild: LogicalPlan): SedonaArrowEvalPython =
-    copy(child = newChild)
+/** Access the native Column SQL rendering for session-free analyzer tests. */
+object NativeStatsColumnSql {
+  def sql(column: Column): String = column.node.sql
 }

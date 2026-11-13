@@ -23,6 +23,7 @@ import static org.locationtech.jts.geom.Coordinate.NULL_ORDINATE;
 import java.nio.ByteOrder;
 import java.util.*;
 import org.apache.sedona.common.Functions;
+import org.apache.sedona.common.geometrySerde.GeometrySerializer;
 import org.datasyslab.jts.io.WKTWriter;
 import org.locationtech.jts.algorithm.Angle;
 import org.locationtech.jts.algorithm.distance.DiscreteFrechetDistance;
@@ -580,16 +581,18 @@ public class GeomUtils {
 
   private static Geometry addMeasure(LineString geom, double measureStart, double measureEnd) {
     Coordinate[] coordinates = geom.getCoordinates();
+    boolean hasZ = GeometrySerializer.getCoordinateType(geom).hasZ;
     double totalLength = geom.getLength();
     CoordinateList newCoordinates = new CoordinateList();
 
     Coordinate c1 = coordinates[0];
-    double measure, measureRange = measureEnd - measureStart;
+    double length = 0, measure, measureRange = measureEnd - measureStart;
     int numCoordinates = coordinates.length;
 
     for (int i = 0; i < numCoordinates; i++) {
       Coordinate c2 = coordinates[i];
-      double length = c1.distance(c2);
+      length += c1.distance(c2);
+      c1 = c2;
 
       if (totalLength > 0.0) {
         measure = measureStart + measureRange * (length / totalLength);
@@ -599,7 +602,10 @@ public class GeomUtils {
         measure = 0.0;
       }
 
-      CoordinateXYZM newCoordinate = new CoordinateXYZM(c2.getX(), c2.getY(), c2.getZ(), measure);
+      Coordinate newCoordinate =
+          hasZ
+              ? new CoordinateXYZM(c2.getX(), c2.getY(), c2.getZ(), measure)
+              : new CoordinateXYM(c2.getX(), c2.getY(), measure);
       newCoordinates.add(newCoordinate);
     }
 
@@ -617,7 +623,7 @@ public class GeomUtils {
     for (int i = 0; i < geom.getNumGeometries(); i++) {
       double subMeasureStart, subMeasureEnd, subLength = 0;
       LineString lineString = (LineString) geom.getGeometryN(i);
-      if (lineString.getCoordinates().length > 1) subLength = lineString.getCoordinates().length;
+      if (lineString.getCoordinates().length > 1) subLength = lineString.getLength();
 
       subMeasureStart = measureStart + measureRange * length / totalLength;
       subMeasureEnd = measureStart + measureRange * (length + subLength) / totalLength;

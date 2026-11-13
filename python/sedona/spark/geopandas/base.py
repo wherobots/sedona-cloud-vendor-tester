@@ -39,6 +39,7 @@ from pyspark.pandas._typing import (
 from pyspark.sql import Column
 
 from sedona.spark.geopandas._typing import GeoFrameLike
+from sedona.spark.sql.types import USES_NATIVE_SPATIAL_TYPES
 
 bool_type = bool
 
@@ -47,6 +48,30 @@ class GeoFrame(metaclass=ABCMeta):
     """
     A base class for both GeoDataFrame and GeoSeries.
     """
+
+    def __repr__(self):
+        if USES_NATIVE_SPATIAL_TYPES:
+            from sedona.spark.geopandas._native import display
+
+            return display(self)
+        return super().__repr__()
+
+    @property
+    def index(self):
+        index = super().index
+        if USES_NATIVE_SPATIAL_TYPES:
+            from sedona.spark.geopandas._native import native_index
+
+            return native_index(index)
+        return index
+
+    def head(self, n=5):
+        result = super().head(n)
+        if USES_NATIVE_SPATIAL_TYPES:
+            result = type(self)(result)
+            if isinstance(self, ps.DataFrame):
+                result._geometry_column_name = self._geometry_column_name
+        return result
 
     @property
     def sindex(self) -> "SpatialIndex":
@@ -5141,8 +5166,11 @@ class GeoFrame(metaclass=ABCMeta):
         mitre_limit : float, default 5.0
             The mitre limit ratio for joins when join_style='mitre'.
         single_sided : bool, default False
-            Whether to create a single-sided buffer. In Sedona, True will default to left-sided buffer.
-            However, 'right' may be specified to use a right-sided buffer.
+            Whether to create a single-sided buffer. As in GeoPandas, the sign of
+            ``distance`` picks the side: a positive distance buffers the left side,
+            and a negative distance buffers the right side.
+        **kwargs
+            Accepted for compatibility with GeoPandas and ignored.
 
         Returns
         -------

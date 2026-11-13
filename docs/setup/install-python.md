@@ -35,6 +35,8 @@ pip install apache-sedona
 pip install "apache-sedona[spark]"
 ```
 
+* With Spark 4.0 and later, the client of a Spark Connect server can be [`pyspark-client`](https://pypi.org/project/pyspark-client/), the Spark Connect-only distribution of PySpark, instead of `pyspark`. `sedona.spark` imports there without a JVM; the RDD API (`SpatialRDD`, its readers, the spatial queries and `Adapter`) is not available. See [Start a Spark Connect server](cluster.md#start-a-spark-connect-server).
+
 * Installing from Sedona Python source
 
 Clone Sedona GitHub source code and run the following command
@@ -81,6 +83,8 @@ GeoPandas brings in `pandas` as a dependency. PyArrow is also needed for Arrow-b
 Sedona Python needs one additional jar file called `sedona-spark-shaded` or `sedona-spark` to work properly. Please make sure you use the correct version for Spark and Scala.
 
 Please use Spark major.minor version number in artifact names.
+
+For Spark/PySpark 4.2, use a matching Sedona Python package and Scala 2.13 Spark 4.2 JVM artifact. The [native spatial type guide](sql-geometry-serialization.md#spark-42-native-types) covers Python value helpers, explicit UDT schemas, GeoPandas boundaries and upstream limitations. Native Python spatial conversion requires Shapely 2 or later.
 
 You can get it using one of the following methods:
 

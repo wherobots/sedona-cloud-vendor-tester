@@ -21,7 +21,6 @@ import itertools
 import typing
 from typing import Any, Callable, Iterable, List, Mapping, Tuple, Type, Union
 
-from pyspark import SparkContext
 from pyspark.sql import Column, SparkSession
 from pyspark.sql import functions as f
 
@@ -65,11 +64,29 @@ def call_sedona_function(
     ):
         args = [args]
 
+    # Spark owns these functions on native runtimes, including their validation
+    # and Connect dispatch. Do not invoke the Sedona JVM counterpart.
+    from sedona.spark.sql.types import USES_NATIVE_SPATIAL_TYPES
+
+    if USES_NATIVE_SPATIAL_TYPES and function_name in {
+        "ST_AsBinary",
+        "ST_GeomFromWKB",
+        "ST_GeogFromWKB",
+        "ST_SRID",
+        "ST_SetSRID",
+    }:
+        if function_name == "ST_GeogFromWKB" and len(args) == 2:
+            return f.st_setsrid(f.st_geogfromwkb(args[0]), args[1])
+        return getattr(f, function_name.lower())(*args)
+
     # in spark-connect environments use connect API
     if is_remote():
         return call_sedona_function_connect(function_name, args)
 
     args = map(_convert_argument_to_java_column, args)
+
+    # Only here: pyspark-client (Spark Connect only) has no SparkContext.
+    from pyspark import SparkContext
 
     jvm = SparkContext._jvm
     if jvm is None:

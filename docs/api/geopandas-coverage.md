@@ -28,7 +28,7 @@ API names so they can be compared directly with the GeoPandas catalog.
 
 ## Coverage summary
 
-**91.4% API availability (160 of 175 catalogued APIs)**, including partial implementations.
+**92.6% API availability (162 of 175 catalogued APIs)**, including partial implementations.
 
 Availability is the number of APIs marked **Available / partially available**
 divided by the total. It measures whether a named API has an implementation, not
@@ -38,11 +38,11 @@ The notes below identify known restrictions.
 | API group | Available / partially available | Unsupported |
 | --- | ---: | ---: |
 | GeoSeries | 119 | 4 |
-| GeoDataFrame | 26 | 7 |
-| Input/output | 3 | 2 |
+| GeoDataFrame | 27 | 6 |
+| Input/output | 4 | 1 |
 | Tools | 6 | 2 |
 | Spatial index | 6 | 0 |
-| Total | 160 | 15 |
+| Total | 162 | 13 |
 
 ### Status definitions
 
@@ -218,7 +218,7 @@ GeoPandas reference; they describe the target interface, not Sedona's support le
 | [`GeoDataFrame.to_geo_dict`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_geo_dict.html) | Unsupported | Intentionally unsupported local feature-collection interface for distributed data; current stub raises NotImplementedError. |
 | [`GeoDataFrame.to_parquet`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_parquet.html) | Available / partially available | Uses the Sedona GeoParquet writer and Spark options; GeoPandas/PyArrow writer-option parity is not provided. |
 | [`GeoDataFrame.to_arrow`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_arrow.html) | Available / partially available | Collects the distributed frame to the driver and delegates to GeoPandas; index=None includes the distributed index. |
-| [`GeoDataFrame.to_feather`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_feather.html) | Unsupported | Stub raises NotImplementedError. |
+| [`GeoDataFrame.to_feather`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_feather.html) | Available / partially available | Collects the distributed frame to the driver and delegates to GeoPandas; index=None includes the distributed index. |
 | [`GeoDataFrame.to_postgis`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_postgis.html) | Unsupported | No GeoDataFrame implementation is present. |
 | [`GeoDataFrame.to_wkb`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_wkb.html) | Available / partially available | Distributed binary and hexadecimal output work; Shapely serialization keyword options are rejected. |
 | [`GeoDataFrame.to_wkt`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.GeoDataFrame.to_wkt.html) | Available / partially available | Distributed output works; Shapely formatting keywords are rejected and stored precision is retained rather than default six-place rounding. |
@@ -250,7 +250,7 @@ GeoPandas reference; they describe the target interface, not Sedona's support le
 | [`geopandas.list_layers`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.list_layers.html) | Available / partially available | GeoPackage only; string/path-like inputs only. Reads layer metadata through Spark and collects the small layer listing to pandas. |
 | [`geopandas.read_file`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.read_file.html) | Available / partially available | Reads Shapefile, GeoJSON, GeoPackage and GeoParquet only. GeoPandas bbox/mask/columns/rows/engine options are warned about and ignored; GeoPackage requires table_name rather than layer. |
 | [`geopandas.read_postgis`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.read_postgis.html) | Unsupported | No implementation or public export in sedona.spark.geopandas. |
-| [`geopandas.read_feather`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.read_feather.html) | Unsupported | No implementation or public export in sedona.spark.geopandas. |
+| [`geopandas.read_feather`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.read_feather.html) | Available / partially available | Reads the file on the driver with GeoPandas and distributes the result, so the path must be readable from the driver; columns, to_pandas_kwargs and PyArrow read options are passed through. Counterpart of GeoDataFrame.to_feather. |
 | [`geopandas.read_parquet`](https://geopandas.org/en/v1.1.4/docs/reference/api/geopandas.read_parquet.html) | Available / partially available | Reads GeoParquet through Spark. The columns, storage_options, bbox and to_pandas_kwargs parameters are accepted but silently ignored (no warning); column selection and bbox filtering are not applied. Extra kwargs trigger a warning. |
 
 ## Tools

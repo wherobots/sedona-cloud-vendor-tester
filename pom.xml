@@ -74,7 +74,8 @@
         <hadoop.version>3.2.4</hadoop.version>
         <jackson.version>2.13.4</jackson.version>
         <jts.version>1.20.0</jts.version>
-        <jts.io.patch.version>1.21.0-datasyslab-2</jts.io.patch.version>
+        <jts.io.patch.version>1.21.0-datasyslab-3</jts.io.patch.version>
+        <sedona.spatial.type.impl>udt</sedona.spatial.type.impl>
         <jts2geojson.version>0.16.1</jts2geojson.version>
         <spatial4j.version>0.8</spatial4j.version>
 
@@ -92,13 +93,13 @@
         <flink.version>1.19.0</flink.version>
         <slf4j.version>1.7.36</slf4j.version>
         <googles2.version>20250620-rc1</googles2.version>
-        <guava.version>33.4.7-jre</guava.version>
+        <guava.version>33.7.2-jre</guava.version>
         <uberh3.version>4.1.1</uberh3.version>
         <scalatest.version>3.1.1</scalatest.version>
         <scala-collection-compat.version>2.5.0</scala-collection-compat.version>
         <geoglib.version>1.52</geoglib.version>
         <caffeine.version>2.9.2</caffeine.version>
-        <proj4sedona.version>0.1.6</proj4sedona.version>
+        <proj4sedona.version>0.1.8</proj4sedona.version>
 
         <geotools.scope>provided</geotools.scope>
         <!-- Because it's not in Maven central, make it provided by default -->
@@ -686,6 +687,13 @@
                         </licenseHeader>
                     </java>
                     <scala>
+                        <includes>
+                            <include>src/main/scala/**/*.scala</include>
+                            <include>src/test/scala/**/*.scala</include>
+                            <include>src/main/scala/**/*.sc</include>
+                            <include>src/test/scala/**/*.sc</include>
+                            <include>spark/shared/src/main/**/*.scala</include>
+                        </includes>
                         <scalafmt>
                             <version>3.7.5</version>
                             <file>tools/maven/scalafmt.conf</file>
@@ -809,6 +817,30 @@
                 <module>spark-shaded</module>
                 <module>shade-proto</module>
             </modules>
+        </profile>
+        <profile>
+            <id>sedona-spark-4.2</id>
+            <activation>
+                <property>
+                    <name>spark</name>
+                    <value>4.2</value>
+                </property>
+            </activation>
+            <properties>
+                <spark.version>4.2.0</spark.version>
+                <spark.compat.version>4.2</spark.compat.version>
+                <spark.major.version>4</spark.major.version>
+                <sedona.spatial.type.impl>native</sedona.spatial.type.impl>
+                <hadoop.version>3.5.0</hadoop.version>
+                <log4j.version>2.25.4</log4j.version>
+                <slf4j.version>2.0.17</slf4j.version>
+
+                <scala.version>2.13.18</scala.version>
+                <scala.compat.version>2.13</scala.compat.version>
+
+                <!-- Skip deploying parent module. it will be deployed with sedona-spark-3.5 -->
+                <skip.deploy.common.modules>true</skip.deploy.common.modules>
+            </properties>
         </profile>
         <profile>
             <id>scala2.12</id>

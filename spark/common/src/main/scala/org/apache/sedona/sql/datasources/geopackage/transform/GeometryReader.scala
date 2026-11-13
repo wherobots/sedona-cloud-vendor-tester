@@ -20,13 +20,29 @@ package org.apache.sedona.sql.datasources.geopackage.transform
 
 import org.apache.sedona.sql.datasources.geopackage.errors.GeopackageException
 import org.apache.spark.sql.sedona_sql.UDT.GeometryUDT
+import org.apache.spark.sql.sedona_sql.types.SpatialTypeSupport
+import org.apache.spark.sql.types.DataType
 import org.datasyslab.jts.io.WKBReader
 
 import java.nio.{ByteBuffer, ByteOrder}
 
 object GeometryReader {
 
+  /**
+   * Convert a GeoPackage geometry blob to Sedona's serialized geometry. A SQL NULL in a geometry
+   * column comes back from the driver as a null array, which maps to a null geometry.
+   */
   def extractWKB(gpkgGeom: Array[Byte]): Array[Byte] = {
+    extractGeometry(gpkgGeom, GeometryUDT()).asInstanceOf[Array[Byte]]
+  }
+
+  def extractGeometry(
+      gpkgGeom: Array[Byte],
+      dataType: DataType = SpatialTypeSupport.geometryType): Any = {
+    if (gpkgGeom == null) {
+      return null
+    }
+
     val reader = ByteBuffer.wrap(gpkgGeom)
 
     val magic = new Array[Byte](2)
@@ -57,8 +73,7 @@ object GeometryReader {
 
     val geom = WKBReader.forDeclaredDimensions(srid).read(wkb)
 
-    // that needs rewriting
-    GeometryUDT.serialize(geom)
+    SpatialTypeSupport.serializeGeometry(geom, dataType)
   }
 
   def skipEnvelope(value: Any, buffer: ByteBuffer): Any = {

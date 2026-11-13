@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import inspect
 import os
 from typing import Union
 import warnings
@@ -202,6 +203,27 @@ def _to_file(
         spark_df = spark_df.drop(SPARK_DEFAULT_INDEX_NAME)
 
     if spark_fmt == "geoparquet":
+        from sedona.spark.sql.types import USES_NATIVE_SPATIAL_TYPES
+        from sedona.spark.geopandas._crs import read_crs_metadata
+
+        if USES_NATIVE_SPATIAL_TYPES:
+            from sedona.spark.geopandas._native import fixed_srid
+
+            for column_name, field in zip(
+                internal.data_spark_column_names, internal.data_fields
+            ):
+                if not isinstance(field.spark_type, GeometryType):
+                    continue
+                has_crs_metadata, column_crs = read_crs_metadata(field)
+                if has_crs_metadata:
+                    srid = column_crs.to_epsg() if column_crs is not None else 0
+                    if srid is None:
+                        raise ValueError(
+                            "Native GeoParquet requires a supported EPSG CRS"
+                        )
+                    spark_df = spark_df.withColumn(
+                        column_name, fixed_srid(scol_for(spark_df, column_name), srid)
+                    )
         writer = spark_df.write.format("geoparquet")
 
         # A CRS assigned on a frame lives in column metadata, not necessarily in the
@@ -252,14 +274,21 @@ def read_file(filename: str, format: Union[str, None] = None, **kwargs):
             - "geojson"
             - "geopackage"
             - "geoparquet"
+    **kwargs
+        Reader options. Only ``table_name`` is used: the name of the table to
+        read, required when ``format`` is "geopackage". Sedona warns about any
+        other keyword argument, since other GeoPandas reader options are not
+        supported.
+
     See also
     --------
     GeoDataFrame.to_file : write GeoDataFrame to file
     """
 
     # We warn the user if they try to use arguments that GeoPandas supports but not Sedona.
-    if kwargs:
-        warnings.warn(f"The given arguments are not supported in Sedona: {kwargs}")
+    unsupported = {k: v for k, v in kwargs.items() if k != "table_name"}
+    if unsupported:
+        warnings.warn(f"The given arguments are not supported in Sedona: {unsupported}")
 
     spark = default_session()
 
@@ -319,8 +348,23 @@ def read_file(filename: str, format: Union[str, None] = None, **kwargs):
         sdf = sdf.orderBy(SPARK_DEFAULT_INDEX_NAME)
         index_spark_columns = [scol_for(sdf, SPARK_DEFAULT_INDEX_NAME)]
 
-    internal = InternalFrame(spark_frame=sdf, index_spark_columns=index_spark_columns)
-    result = GeoDataFrame(ps.DataFrame(internal))
+    from sedona.spark.sql.types import USES_NATIVE_SPATIAL_TYPES
+
+    if USES_NATIVE_SPATIAL_TYPES:
+        from sedona.spark.geopandas._native import from_spark
+
+        wrapped = from_spark(
+            sdf,
+            index_col=SPARK_DEFAULT_INDEX_NAME if index_spark_columns else None,
+        )
+        if index_spark_columns:
+            wrapped = ps.DataFrame(wrapped._internal.copy(index_names=[None]))
+        result = GeoDataFrame(wrapped)
+    else:
+        internal = InternalFrame(
+            spark_frame=sdf, index_spark_columns=index_spark_columns
+        )
+        result = GeoDataFrame(ps.DataFrame(internal))
 
     # Most readers use "geometry", but formats such as GeoPackage retain the
     # source geometry column name (for example, "geom"). Selecting the sole
@@ -361,6 +405,7 @@ def read_parquet(
     Parameters
     ----------
     path : str, path object
+        Path to a GeoParquet file or a directory of GeoParquet files.
     columns : list-like of strings, default=None
         Not currently supported in Sedona
     storage_options : dict, optional
@@ -369,6 +414,9 @@ def read_parquet(
         Not currently supported in Sedona
     to_pandas_kwargs : dict, optional
         Not currently supported in Sedona
+    **kwargs
+        Not currently supported in Sedona. Any keyword argument is ignored with
+        a warning.
 
     Returns
     -------
@@ -376,16 +424,96 @@ def read_parquet(
 
     Examples
     --------
-    from sedona.spark.geopandas import read_parquet
+    >>> from sedona.spark.geopandas import read_parquet
     >>> df = read_parquet("data.parquet")  # doctest: +SKIP
-
-    Specifying columns to read:
-
-    >>> df = read_parquet(
-    ...     "data.parquet",
-    ... )  # doctest: +SKIP
     """
     if kwargs:
         warnings.warn(f"The given arguments are not supported in Sedona: {kwargs}")
 
-    return read_file(path, format="geoparquet", **kwargs)
+    return read_file(path, format="geoparquet")
+
+
+def read_feather(path, columns=None, to_pandas_kwargs=None, **kwargs):
+    """
+    Load a Feather object from the file path, returning a GeoDataFrame.
+
+    .. versionadded:: 2.0.0
+
+    You can read a subset of columns in the file using the ``columns`` parameter.
+    However, the structure of the returned GeoDataFrame will depend on which
+    columns you read:
+
+    * if no geometry columns are read, this will raise a ``ValueError`` - you
+      should use the pandas `read_feather` method instead.
+    * if the primary geometry column saved to this file is not included in
+      columns, the first available geometry column will be set as the geometry
+      column of the returned GeoDataFrame.
+
+    If 'crs' key is not present in the Feather metadata associated with the
+    Feather object, it will default to "OGC:CRS84" according to the specification.
+
+    Note: Feather is a single-file format with no distributed reader, so this
+    reads the whole file into the driver's memory with GeoPandas and then
+    distributes it. It should only be used if the file is expected to be small.
+    This is the counterpart of :meth:`GeoDataFrame.to_feather`.
+
+    Requires 'pyarrow' >= 0.17.
+
+    Parameters
+    ----------
+    path : str, path object or file-like object
+        String, path object (implementing os.PathLike[str]) or file-like object
+        implementing a binary read() function. The path is read on the driver,
+        so it must be accessible from the driver.
+    columns : list-like of strings, default=None
+        If not None, only these columns will be read from the file.  If
+        the primary geometry column is not included, the first secondary
+        geometry read from the file will be set as the geometry column
+        of the returned GeoDataFrame.  If no geometry columns are present,
+        a ``ValueError`` will be raised.
+    to_pandas_kwargs : dict, optional
+        Arguments passed to the `pa.Table.to_pandas` method for non-geometry
+        columns. Requires a GeoPandas version whose ``read_feather`` accepts it.
+    **kwargs
+        Any additional kwargs passed to :func:`pyarrow.feather.read_table`.
+
+    Returns
+    -------
+    GeoDataFrame
+
+    Examples
+    --------
+    >>> from sedona.spark.geopandas import read_feather
+    >>> df = read_feather("data.feather")  # doctest: +SKIP
+
+    Specifying columns to read:
+
+    >>> df = read_feather(
+    ...     "data.feather",
+    ...     columns=["geometry", "pop_est"]
+    ... )  # doctest: +SKIP
+
+    See Also
+    --------
+    GeoDataFrame.to_feather : write GeoDataFrame to Feather
+    read_parquet : read GeoParquet with Spark's distributed reader
+    """
+    import geopandas as gpd
+
+    if to_pandas_kwargs is not None:
+        # GeoPandas added to_pandas_kwargs to read_feather after its first releases.
+        if "to_pandas_kwargs" not in inspect.signature(gpd.read_feather).parameters:
+            raise NotImplementedError(
+                "to_pandas_kwargs is not supported by the installed GeoPandas version"
+            )
+        kwargs["to_pandas_kwargs"] = to_pandas_kwargs
+
+    # Feather has no distributed reader, so we rely on GeoPandas's implementation,
+    # the same way GeoDataFrame.to_feather() does. This also keeps GeoPandas's
+    # handling of the geo metadata: the active geometry column, CRS and index.
+    log_advice(
+        "`read_feather` loads all data into the driver's memory. "
+        "It should only be used if the file is expected to be small."
+    )
+    gpd_df = gpd.read_feather(path, columns=columns, **kwargs)
+    return GeoDataFrame._from_local_geopandas(gpd_df)
