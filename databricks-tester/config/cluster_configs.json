@@ -4,6 +4,10 @@
             "spark_version": "16.4.x-scala2.12",
             "node_type_id": "m5d.large",
             "num_workers": 1,
+            "aws_attributes": {
+                "availability": "ON_DEMAND",
+                "zone_id": "auto"
+            },
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "STANDARD",
             "spark_conf": {
@@ -19,6 +23,10 @@
             "spark_version": "16.4.x-scala2.12",
             "node_type_id": "m5d.large",
             "num_workers": 1,
+            "aws_attributes": {
+                "availability": "ON_DEMAND",
+                "zone_id": "auto"
+            },
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "PHOTON",
             "spark_conf": {
@@ -34,6 +42,10 @@
             "spark_version": "17.3.x-scala2.13",
             "node_type_id": "m5d.large",
             "num_workers": 1,
+            "aws_attributes": {
+                "availability": "ON_DEMAND",
+                "zone_id": "auto"
+            },
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "STANDARD",
             "spark_conf": {
@@ -49,6 +61,10 @@
             "spark_version": "17.3.x-scala2.13",
             "node_type_id": "m5d.large",
             "num_workers": 1,
+            "aws_attributes": {
+                "availability": "ON_DEMAND",
+                "zone_id": "auto"
+            },
             "data_security_mode": "SINGLE_USER",
             "runtime_engine": "PHOTON",
             "spark_conf": {

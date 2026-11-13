@@ -162,3 +162,5 @@ uv run python -m sedona_databricks_tester cleanup --all
 ## Supported Runtimes
 
 See config/cluster_configs.json for details.
+
+Test clusters use on-demand instances and let Databricks choose the availability zone (`zone_id: auto`). Spot capacity in a single zone left clusters pending past the start timeout, and reclaimed spot drivers failed runs mid-test.
