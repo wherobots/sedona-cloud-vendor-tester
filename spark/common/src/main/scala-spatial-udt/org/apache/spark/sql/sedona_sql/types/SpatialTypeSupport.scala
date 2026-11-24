@@ -18,8 +18,11 @@
  */
 package org.apache.spark.sql.sedona_sql.types
 
+import java.nio.ByteOrder
+
 import org.apache.sedona.common.S2Geography.Geography
 import org.apache.sedona.common.geography.Constructors
+import org.apache.sedona.sql.utils.GeographySerializer
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry.FunctionBuilder
 import org.apache.spark.sql.catalyst.expressions.{Expression, SpecializedGetters}
 import org.apache.spark.sql.sedona_sql.UDT.{GeographyUDT, GeometryUDT}
@@ -33,6 +36,16 @@ object SpatialTypeSupport {
   def unwrapGeographyInput(expression: Expression): Expression = expression
   def geometryType: DataType = GeometryUDT()
   def geometryType(srid: Int): DataType = geometryType
+  def geographyType: DataType = GeographyUDT()
+  def geographyType(srid: Int): DataType = geographyType
+  def geographySrid(dataType: DataType): Option[Int] = None
+
+  /** Sedona's own geography type takes any SRID. */
+  def supportsGeographySrid(srid: Int): Boolean = true
+
+  /** The value of a geography column for the geography that `wkb` is the WKB of. */
+  def geographyFromWkb(wkb: Array[Byte], srid: Int, dataType: DataType): Any =
+    GeographySerializer.serializeWkb(wkb, srid)
   def geometrySrid(dataType: DataType): Option[Int] = None
 
   /** Spark has a registry of coordinate reference systems only where it has native types. */
@@ -51,6 +64,20 @@ object SpatialTypeSupport {
     if (value == null) null else GeographyUDT.deserialize(value)
   def readGeometry(row: SpecializedGetters, ordinal: Int, dataType: DataType): Geometry =
     if (row.isNullAt(ordinal)) null else deserializeGeometry(row.get(ordinal, dataType), dataType)
+
+  /**
+   * The geometry that [[readGeometry]] returns and the WKB of a native Spark geometry value.
+   * Sedona uses no native values before Spark 4.2, so there is no WKB.
+   */
+  def readGeometryWithWkb(
+      row: SpecializedGetters,
+      ordinal: Int,
+      dataType: DataType,
+      order: ByteOrder): (Geometry, Option[Array[Byte]]) =
+    (readGeometry(row, ordinal, dataType), None)
+
+  /** A native Spark geometry value that holds `wkb`. Sedona uses none before Spark 4.2. */
+  def nativeGeometryFromWkb(wkb: Array[Byte], srid: Int, dataType: DataType): Option[Any] = None
   def externalGeometry(value: Geometry): Any = value
   def externalGeometry(value: Geometry, dataType: DataType): Any = value
   def fromExternalGeometry(value: Any): Geometry = value.asInstanceOf[Geometry]

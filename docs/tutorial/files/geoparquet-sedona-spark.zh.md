@@ -69,7 +69,11 @@ Sedona 会并行写出多个 Parquet 文件，比写单一文件快得多。
 
 写出 GeoParquet 时，Sedona 会保留空 `Point`、`LineString` 和 `Polygon` 几何对象声明的 XY 或 XYZ 坐标布局。即使 Z 坐标值为 `NaN`，XYZ 几何对象也会保留 Z 维度。
 
-[GeoParquet 1.1](https://geoparquet.org/releases/v1.1.0/#wkb) 不支持 M 坐标。Sedona 在写出 GeoParquet 时会丢弃 M：XYM 转换为 XY，XYZM 转换为 XYZ。如果需要保留 M 值，请在写出前将其单独存储。
+Sedona 按 GeoParquet 规范的要求，用 ISO WKB 的类型代码写出 Z 维度：带 Z 坐标的几何对象使用 1001 到 1007 的类型代码，例如 `Point Z` 为 1001。Sedona 2.0.0 之前的写出方式是用 EWKB 标志位标记 Z（`Point Z` 为 `0x80000001`）。两种形式 Sedona 都能读取。
+
+几何集合的每个成员保留各自的坐标布局。同时包含 XY 和 XYZ 成员的集合会按两种类型代码存储，例如集合为 1007，XY 的 `LineString` 成员为 2，`Point Z` 成员为 1001。ISO WKB 要求带 Z 坐标的集合中每个成员也带 Z 坐标，因此读取方可能拒绝这样的几何对象。Spark 原生几何类型就是如此：在 Spark 4.2 及更高版本上，Sedona 将其读入原生几何列时会失败并报 `WKB_PARSE_ERROR`。
+
+[GeoParquet 1.1](https://geoparquet.org/releases/v1.1.0/#wkb) 不支持 M 坐标。Sedona 在写出 GeoParquet 1.1 时会丢弃 M：XYM 转换为 XY，XYZM 转换为 XYZ。如果需要保留 M 值，请在写出前将其单独存储，或者写出 GeoParquet 2.0，它会保留 M 坐标。详见下文写出 GeoParquet 2.0 一节。
 
 ## 使用 Spark 将 GeoParquet 读入 Sedona DataFrame
 
@@ -124,9 +128,58 @@ df = sedona.read.format("geoparquet").load("/tmp/written-by-another-engine")
 
 Spark 4.2 自带 EPSG 和 ESRI 坐标参考系的注册表，对于 EPSG 以外的机构，Sedona 会查询该注册表。Spark 4.1 没有这样的注册表。这类标识符的代码不会被直接当作 SRID，因为 SRID 代表 EPSG 代码，而其他机构可能用同一个数字表示不同的坐标系：`ESRI:4812` 不是 `EPSG:4812`，因此在任何 Spark 版本上都不会得到 SRID。`projjson:<key>` 中的 `<key>` 按原样查找，不做任何修改。
 
-如果 CRS 无法给出 SRID，则使用 GeoParquet 元数据中的 `crs`。如果它也无法给出，SRID 为 0。在 Spark 4.2 及更高版本上，Sedona 使用 Spark 原生几何类型，类型必须指明 SRID，因此这样的列会加载失败。
+如果 CRS 无法给出 SRID，则使用 GeoParquet 元数据中的 `crs`。如果它也无法给出，SRID 为 0。
 
-`GEOGRAPHY` 列会被读取为保存 WKB 的二进制列，即使 GeoParquet 元数据列出了它们也是如此，可以用 `ST_GeogFromWKB` 转换。
+在 Spark 4.2 及更高版本上，Sedona 会推断出 Spark 原生几何类型，而这种类型必须指明 SRID。因此，读取 CRS 无法给出 SRID 的列时，Sedona 在推断 schema 的阶段就会失败，并提示该 CRS 无法用 Spark 原生 SRID 表示。要读取这样的列，请为读取器提供一个 schema，并在其中为该列使用 Sedona 自己的几何类型，在 Python 中是 `LegacyGeometryType`，在 Scala 和 Java 中是 `GeometryUDT`。读出的几何对象 SRID 为 0：
+
+```python
+from pyspark.sql.types import StructField, StructType
+from sedona.spark.sql.types import LegacyGeometryType
+
+schema = StructType([StructField("geometry", LegacyGeometryType())])
+df = sedona.read.schema(schema).format("geoparquet").load("/tmp/somewhere")
+```
+
+Sedona 的函数，例如 `ST_AsText` 和 `ST_Buffer`，可以处理这样的列。Spark 内置的函数，例如 Spark 4.2 上的 `ST_SRID` 和 `ST_AsBinary`，只接受原生几何列。
+
+`GEOGRAPHY` 列会被读取为地理列：在 Spark 4.1 上是 Sedona 的地理类型，在 Spark 4.2 及更高版本上是 Spark 原生地理类型。SRID 按上述规则取自 `crs` 属性，因此没有该属性的列 SRID 为 4326，使用其他地理坐标系（例如 NAD83，即 `EPSG:4269`）的列 SRID 为该坐标系的 SRID。
+
+有三类 `GEOGRAPHY` 列需要您提供 schema。
+
+第一类是边的插值算法不是 `spherical` 的列，即 `vincenty`、`thomas`、`andoyer` 或 `karney`。Sedona 在球面上计算，因此会拒绝这样的列。在 schema 中把该列声明为二进制类型，即可读出它的 WKB：
+
+```python
+from pyspark.sql.types import BinaryType, StructField, StructType
+
+schema = StructType([StructField("geography", BinaryType())])
+df = sedona.read.schema(schema).format("geoparquet").load("/tmp/somewhere")
+```
+
+第二类是在 Spark 4.2 及更高版本上，CRS 未知或不是地理坐标系的列。Spark 原生地理类型无法表示这样的 CRS。在 schema 中为该列使用 Sedona 自己的地理类型即可读取，在 Python 中是 `LegacyGeographyType`，在 Scala 和 Java 中是 `GeographyUDT`：
+
+```python
+from pyspark.sql.types import StructField, StructType
+from sedona.spark.sql.types import LegacyGeographyType
+
+schema = StructType([StructField("geography", LegacyGeographyType())])
+df = sedona.read.schema(schema).format("geoparquet").load("/tmp/somewhere")
+```
+
+第三类是在 Spark 4.2 及更高版本上，各文件声明的 SRID 不一致的列。Spark 原生地理类型的一列只有一个 SRID，因此 Sedona 会在扫描文件之前拒绝读取。在 schema 中为该列使用 `GEOGRAPHY(ANY)` 类型即可读取这些文件，每个地理对象保留其所在文件的 SRID：
+
+```python
+df = (
+    sedona.read.schema("geography GEOGRAPHY(ANY)")
+    .format("geoparquet")
+    .load("/tmp/somewhere")
+)
+```
+
+`GEOGRAPHY` 列不会被读取为几何列。如果 schema 为它指定几何类型，Sedona 会拒绝读取；如果同一列在一部分文件中是几何列、在另一部分文件中是 `GEOGRAPHY` 列，Sedona 也会拒绝读取。这既适用于 `GEOMETRY` 列，也适用于 GeoParquet 1.x 文件中的几何列。
+
+因上述原因被 Sedona 拒绝的文件并不是损坏的文件。即使设置了 `ignoreCorruptFiles` 选项，读取也会失败，而不会跳过该文件。
+
+对地理列的过滤条件，Sedona 会逐行计算，不会使用文件的边界框，因为这些边界框是平面的。
 
 Spark 3.5 和 4.0 自带的 Parquet 库早于这些逻辑类型，无法打开此类文件。
 
@@ -233,6 +286,8 @@ df.write.format("geoparquet")
 * `""`（空字符串）：省略 `crs` 字段。对于支持 CRS 的实现而言，意味着使用 [OGC:CRS84](https://www.opengis.net/def/crs/OGC/1.3/CRS84)。
 * `"{...}"`（PROJJSON 字符串）：`crs` 字段会被设为表示该几何坐标参考系的 PROJJSON 对象。可在 https://epsg.io/ （页面底部点击 JSON 选项）查找特定 CRS 的 PROJJSON，也可以根据需要自定义 PROJJSON。
 
+GeoParquet 写出操作的全部选项见[参数](../../api/sql/Parameter.md)。
+
 ### 通过 SRID 自动推断 CRS
 
 未显式提供 `geoparquet.crs` 选项时，Sedona 会根据几何列的 SRID 自动推导出 CRS PROJJSON。例如，如果某列所有几何对象的 SRID 都是 32632（通过 [`ST_SetSRID`](../../api/sql/Spatial-Reference-System/ST_SetSRID.md) 设置），写入器会自动在 GeoParquet 元数据中生成 EPSG:32632 对应的 PROJJSON。当 SRID 为 4326 时，由于这就是 GeoParquet 的默认 CRS（OGC:CRS84），`crs` 字段会被省略。
@@ -241,10 +296,55 @@ df.write.format("geoparquet")
 * 若同一列中的几何对象 SRID 不一致，`crs` 字段默认置为 `null`。
 * 若显式提供了 `geoparquet.crs` 或 `geoparquet.crs.<column_name>` 选项，则始终优先于 SRID 推导出的 CRS。
 
+在 Spark 4.2 及更高版本上，原生几何列在列类型中指明 SRID，针对这种列的 CRS 选项必须与之一致。这对所有 GeoParquet 版本都适用：
+
+* CRS 的标识符，即 PROJJSON 中的 `id` 或 `ids` 中的某一项，必须给出该列的 SRID。
+* 该标识符不能指明其注册库的版本。SRID 代表该代码当前的含义，而同一代码在另一个版本中可能表示另一个 CRS，因此 Sedona 会拒绝这样的选项。
+* Sedona 只比较标识符，定义的其余部分按给定内容写出。请确认该定义描述的就是坐标所在的 CRS。
+
 GeoParquet 以 `(x, y)` 顺序存储 WKB 坐标。根据 GeoParquet 1.1 规范，此顺序会覆盖 CRS
 中声明的坐标轴顺序。因此，Sedona 会保留权威的 CRS 坐标轴元数据，并且在读写 GeoParquet
 时不会重新排列几何坐标。如果坐标本身需要交换，可以使用
 [`ST_FlipCoordinates`](../../api/sql/Geometry-Editors/ST_FlipCoordinates.md)。
+
+## 写出 GeoParquet 2.0
+
+[GeoParquet 2.0](https://geoparquet.org/releases/v2.0.0/) 使用 Parquet 格式的 `GEOMETRY` 逻辑类型存储每个几何列。自 Sedona 2.0.0 起，在 Spark 4.1 及更高版本上，把 `geoparquet.version` 设为 `2.0.0` 即可写出这样的文件。默认版本为 `1.1.0`。
+
+```python
+df.write.format("geoparquet").option("geoparquet.version", "2.0.0").save(
+    "/tmp/somewhere"
+)
+```
+
+GeoParquet 2.0 文件与 GeoParquet 1.1 文件有以下区别：
+
+* 几何列带有 `GEOMETRY` 逻辑类型，CRS 是该类型的一个属性。GeoParquet 元数据会以 PROJJSON 重复给出 CRS。
+* 每个行组都带有地理空间统计信息，即边界框和几何类型，由 Parquet 库写出。因此 Sedona 默认不再添加 covering 列。`geoparquet.covering` 和 `geoparquet.covering.<column_name>` 仍可声明由你提供的 covering 列。
+* M 坐标会被保留：XYM 和 XYZM 几何对象按原样存储。GeoParquet 元数据中的 `geometry_types` 会标明坐标布局，例如 `Point M` 或 `LineString ZM`。
+* GeoParquet 元数据中的 `bbox` 还会给出 Z 和 M 坐标的范围。含 Z 坐标的列有六个值 `[xmin, ymin, zmin, xmax, ymax, zmax]`，同时含 Z 和 M 坐标的列有八个值 `[xmin, ymin, zmin, mmin, xmax, ymax, zmax, mmax]`。只含 M 而不含 Z 坐标的列只给出 X 和 Y 的范围，因为 GeoParquet 的 `bbox` 无法在没有 Z 范围时表示 M 范围。为 NaN 的 Z 或 M 坐标不计入范围；如果某一维的坐标全部为 NaN，则视为该列没有这一维，因此数组可能比几何的坐标维度所对应的更短。如果要写出的某个范围值为无穷大或 NaN，Sedona 不会为该列写出 `bbox`，因为 JSON 无法用数字表示这样的值。GeoParquet 1.1 文件仍只写出 X 和 Y 范围的四个值。
+
+Sedona 会用能够标识 CRS 的最短形式写出列的 `crs` 属性：
+
+| 列的 CRS | 列的 `crs` 属性 | GeoParquet 元数据中的 `crs` |
+| --- | --- | --- |
+| OGC:CRS84（SRID 4326） | 不设置 | 不设置 |
+| 带标识符的 CRS，例如 EPSG:3857 | `EPSG:3857` | PROJJSON |
+| 不带标识符的 CRS | 内联 PROJJSON | PROJJSON |
+| 标识符带有注册表版本的 CRS，例如 `IAU` 的 2015 版 | 内联 PROJJSON | PROJJSON |
+| 未知（SRID 0） | `srid:0` | `null` |
+
+在 Spark 4.2 及更高版本上，CRS 来自列类型的 SRID。
+
+Sedona 的 `geoparquet` 读取器会把 GeoParquet 2.0 文件的几何列读取为几何列。例外是在 Spark 4.2 及更高版本上，CRS 无法给出 SRID 的列，例如没有标识符的 PROJJSON。Sedona 无法为它推断出原生几何类型，因此读取会失败，除非你提供一个使用 Sedona 自己的几何类型的 schema，做法见读取 GeoParquet 2.0 文件一节。Spark 自带的 Parquet 读取器 `spark.read.parquet` 在 Spark 4.2 上返回什么，取决于写出文件时的列类型。对于原生几何列，它返回原生几何列。对于 `GeometryUDT` 列（在 Spark 4.1 上写出的几何列都是这种类型），它以二进制列返回 WKB，与读取 GeoParquet 1.1 文件时相同。
+
+在 Spark 4.1 上，SRID 属于每个几何对象而不属于列，而 GeoParquet 2.0 的一列只有一个 CRS。Sedona 取每个文件中该列第一个几何对象的 SRID 作为列的 CRS；如果同一文件中另一个几何对象的 SRID 不同，写出会失败。SRID 为 0 的列，或在文件中没有任何几何对象的列，会以未知 CRS 写出。
+
+Sedona 必须在写出第一行之前知道 CRS，因此会把第一个几何对象之前的行暂存在内存中，每个文件最多 16 MB。`geoparquet.srid.lookahead.bytes` 可以修改这一上限。到达上限时仍未出现几何对象的列会以未知 CRS 写出，之后如果出现带 SRID 的几何对象，写出会失败。
+
+设置 `geoparquet.crs` 或 `geoparquet.crs.<column_name>` 可以自行指定 CRS。此时 Sedona 按给定值写出，不再与几何对象的 SRID 比较。
+
+Spark 3.5 和 4.0 自带的 Parquet 库早于 `GEOMETRY` 逻辑类型。Sedona 在这些版本上写出 GeoParquet 1.1，并拒绝把 `geoparquet.version` 设为 `2.0.0`。
 
 ## 写出带 covering 元数据的 GeoParquet
 

@@ -652,6 +652,71 @@ class functionTestScala
       assert(testtable.take(1).head.get(0) == null)
     }
 
+    it("ST_IsValid returns false for a geometry the validator throws on") {
+      // Row 3 makes JTS IsValidOp throw: near Double.MAX_VALUE its orientation test overflows.
+      val geoms = sparkSession
+        .sql("""
+          |SELECT id, ST_GeomFromWKT(wkt) AS geom FROM VALUES
+          |  (1, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'),
+          |  (2, 'POLYGON ((0 0, 1 1, 0 1, 1 0, 0 0))'),
+          |  (3, 'POLYGON ((-1.7e308 -10, 1.7e308 -10, 1.7e308 0, 1.7e308 10, -1.7e308 10, -1.7e308 -10), (-1e308 0, -5e307 5, -5e307 -5, -1e308 0))'),
+          |  (4, NULL),
+          |  (5, 'POLYGON EMPTY'),
+          |  (6, 'POLYGON ((0 0, 10 0, 10 10, 5 10, 7 5, 3 5, 5 10, 0 10, 0 0))')
+          |  AS t(id, wkt)
+          |""".stripMargin)
+        .repartition(3, col("id"))
+      val actual = geoms
+        .selectExpr("id", "ST_IsValid(geom)", "ST_IsValid(geom, 0)", "ST_IsValid(geom, 1)")
+        .collect()
+        .map(row => row.getInt(0) -> (1 to 3).map(i => Option(row.get(i))))
+        .toMap
+      val expected = Map(
+        1 -> Seq(Some(true), Some(true), Some(true)),
+        2 -> Seq(Some(false), Some(false), Some(false)),
+        3 -> Seq(Some(false), Some(false), Some(false)),
+        4 -> Seq(None, None, None),
+        5 -> Seq(Some(true), Some(true), Some(true)),
+        6 -> Seq(Some(false), Some(false), Some(true)))
+      assertEquals(expected, actual)
+    }
+
+    it("ST_IsValidReason and ST_IsValidDetail report the error the validator throws") {
+      val geoms = sparkSession
+        .sql("""
+          |SELECT id, ST_GeomFromWKT(wkt) AS geom FROM VALUES
+          |  (1, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'),
+          |  (2, 'POLYGON ((-1.7e308 -10, 1.7e308 -10, 1.7e308 0, 1.7e308 10, -1.7e308 10, -1.7e308 -10), (-1e308 0, -5e307 5, -5e307 -5, -1e308 0))'),
+          |  (3, NULL)
+          |  AS t(id, wkt)
+          |""".stripMargin)
+        .repartition(3, col("id"))
+      val actual = geoms
+        .selectExpr(
+          "id",
+          "ST_IsValidReason(geom)",
+          "ST_IsValidReason(geom, 1)",
+          "ST_IsValidDetail(geom)",
+          "ST_IsValidDetail(geom, 1)")
+        .collect()
+        .map(row => row.getInt(0) -> (1 to 4).map(i => Option(row.get(i))))
+        .toMap
+      val reason = "IllegalArgumentException: Segment vertex does not intersect ring"
+      val expected = Map(
+        1 -> Seq(
+          Some("Valid Geometry"),
+          Some("Valid Geometry"),
+          Some(Row(true, null, null)),
+          Some(Row(true, null, null))),
+        2 -> Seq(
+          Some(reason),
+          Some(reason),
+          Some(Row(false, reason, null)),
+          Some(Row(false, reason, null))),
+        3 -> Seq(None, None, None, None))
+      assertEquals(expected, actual)
+    }
+
     it("Passed ST_ReducePrecision") {
       var testtable = sparkSession.sql("""
           |SELECT ST_ReducePrecision(ST_GeomFromWKT('Point(0.1234567890123456789 0.1234567890123456789)'), 8)
@@ -2014,7 +2079,15 @@ class functionTestScala
       (9, "MULTILINESTRING ((10 10, 20 20, 10 40), (40 40, 30 30, 40 20, 30 10))"),
       (
         10,
-        "GEOMETRYCOLLECTION (POINT (40 10), LINESTRING (10 10, 20 20, 10 40), POLYGON ((40 40, 20 45, 45 30, 40 40)))"))
+        "GEOMETRYCOLLECTION (POINT (40 10), LINESTRING (10 10, 20 20, 10 40), POLYGON ((40 40, 20 45, 45 30, 40 40)))"),
+      (11, "POINT EMPTY"),
+      (12, "POLYGON EMPTY"),
+      (13, "MULTIPOINT EMPTY"),
+      (14, "GEOMETRYCOLLECTION (POINT (1 2), POLYGON ((0 0, 1 0, 1 1, 0 0)))"),
+      (15, "GEOMETRYCOLLECTION (POINT EMPTY, POINT (1 2))"),
+      (16, "LINESTRING Z (0 0 0, 1 1 0, 0 0 1)"),
+      (17, "GEOMETRYCOLLECTION Z (LINESTRING Z (0 0 0, 1 1 0, 0 0 1))"),
+      (18, "POLYGON Z ((0 0 0, 1 0 0, 1 1 0, 0 0 1))"))
       .map({ case (index, wkt) => Tuple2(index, wktReader.read(wkt)) })
       .toDF("id", "geom")
 
@@ -2034,7 +2107,15 @@ class functionTestScala
       (7, true),
       (8, false),
       (9, false),
-      (10, false))
+      (10, false),
+      (11, false),
+      (12, false),
+      (13, false),
+      (14, true),
+      (15, false),
+      (16, false),
+      (17, false),
+      (18, false))
   }
 
   it("Should pass ST_NumInteriorRings") {
@@ -3496,6 +3577,11 @@ class functionTestScala
     val geomTestCases = Map(
       ("'LINESTRING (0 1, 1 0, 2 0)'") -> ("'LINESTRING M(0 1 1, 1 0 1, 2 0 1)'", "'LINESTRING M(0 1 0, 1 0 0, 2 0 0)'"),
       ("'LINESTRING M(0 1 3, 1 0 3, 2 0 3)'") -> ("'LINESTRING M(0 1 3, 1 0 3, 2 0 3)'", "'LINESTRING M(0 1 3, 1 0 3, 2 0 3)'"),
+      ("'LINESTRING ZM(0 1 2 3, 1 0 2 3, 2 0 2 3)'") -> ("'LINESTRING M(0 1 3, 1 0 3, 2 0 3)'", "'LINESTRING M(0 1 3, 1 0 3, 2 0 3)'"),
+      ("'MULTIPOINT ZM((1 2 3 4))'") -> ("'MULTIPOINT M((1 2 4))'", "'MULTIPOINT M((1 2 4))'"),
+      ("'GEOMETRYCOLLECTION (MULTIPOINT ((1 2)), MULTILINESTRING ((0 0, 1 1)))'") -> ("'GEOMETRYCOLLECTION M(MULTIPOINT M((1 2 1)), MULTILINESTRING M((0 0 1, 1 1 1)))'", "'GEOMETRYCOLLECTION M(MULTIPOINT M((1 2 0)), MULTILINESTRING M((0 0 0, 1 1 0)))'"),
+      ("'GEOMETRYCOLLECTION (POINT (1 2), LINESTRING EMPTY)'") -> ("'GEOMETRYCOLLECTION M(POINT M(1 2 1), LINESTRING M EMPTY)'", "'GEOMETRYCOLLECTION M(POINT M(1 2 0), LINESTRING M EMPTY)'"),
+      ("'MULTIPOINT ((1 2), EMPTY)'") -> ("'MULTIPOINT M((1 2 1), EMPTY)'", "'MULTIPOINT M((1 2 0), EMPTY)'"),
       ("'LINESTRING EMPTY'") -> ("'LINESTRING EMPTY'", "'LINESTRING EMPTY'"))
     for (((geom), expectedResult) <- geomTestCases) {
       val df = sparkSession.sql(
@@ -3521,6 +3607,10 @@ class functionTestScala
     val geomTestCases = Map(
       ("'LINESTRING (0 1, 1 0, 2 0)'") -> ("'LINESTRING ZM(0 1 1 1, 1 0 1 1, 2 0 1 1)'", "'LINESTRING ZM(0 1 0 0, 1 0 0 0, 2 0 0 0)'"),
       ("'LINESTRING ZM(0 1 3 2, 1 0 3 2, 2 0 3 2)'") -> ("'LINESTRING ZM(0 1 3 2, 1 0 3 2, 2 0 3 2)'", "'LINESTRING ZM(0 1 3 2, 1 0 3 2, 2 0 3 2)'"),
+      ("'MULTIPOINT ((1 2))'") -> ("'MULTIPOINT ZM((1 2 1 1))'", "'MULTIPOINT ZM((1 2 0 0))'"),
+      ("'GEOMETRYCOLLECTION (MULTIPOINT ((1 2)), MULTILINESTRING ((0 0, 1 1)))'") -> ("'GEOMETRYCOLLECTION ZM(MULTIPOINT ZM((1 2 1 1)), MULTILINESTRING ZM((0 0 1 1, 1 1 1 1)))'", "'GEOMETRYCOLLECTION ZM(MULTIPOINT ZM((1 2 0 0)), MULTILINESTRING ZM((0 0 0 0, 1 1 0 0)))'"),
+      ("'GEOMETRYCOLLECTION (POINT (1 2), LINESTRING EMPTY)'") -> ("'GEOMETRYCOLLECTION ZM(POINT ZM(1 2 1 1), LINESTRING ZM EMPTY)'", "'GEOMETRYCOLLECTION ZM(POINT ZM(1 2 0 0), LINESTRING ZM EMPTY)'"),
+      ("'MULTIPOINT ((1 2), EMPTY)'") -> ("'MULTIPOINT ZM((1 2 1 1), EMPTY)'", "'MULTIPOINT ZM((1 2 0 0), EMPTY)'"),
       ("'LINESTRING EMPTY'") -> ("'LINESTRING EMPTY'", "'LINESTRING EMPTY'"))
     for (((geom), expectedResult) <- geomTestCases) {
       val df = sparkSession.sql(

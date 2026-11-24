@@ -28,6 +28,8 @@ import com.uber.h3core.exceptions.H3Exception;
 import java.util.*;
 import java.util.stream.Collectors;
 import org.apache.sedona.common.geometryObjects.Box2D;
+import org.apache.sedona.common.geometryObjects.Circle;
+import org.apache.sedona.common.geometrySerde.GeometrySerializer;
 import org.apache.sedona.common.sphere.Haversine;
 import org.apache.sedona.common.sphere.Spheroid;
 import org.apache.sedona.common.utils.*;
@@ -3180,6 +3182,87 @@ public class FunctionsTest extends TestBase {
   }
 
   @Test
+  public void isClosedEmptyAndCollections() throws ParseException {
+    // An empty geometry is not closed. A multi-geometry or collection is closed when every member
+    // is, so an empty member makes it not closed. The expected values match PostGIS.
+    String[] closed = {
+      "POINT (1 2)",
+      "LINESTRING (0 0, 1 0, 1 1, 0 0)",
+      "POLYGON ((0 0, 1 0, 1 1, 0 0))",
+      "MULTIPOINT ((1 2), (3 4))",
+      "GEOMETRYCOLLECTION (POINT (1 2), POLYGON ((0 0, 1 0, 1 1, 0 0)))",
+      "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (POINT (1 2)), LINESTRING (0 0, 1 0, 1 1, 0 0))"
+    };
+    String[] notClosed = {
+      "POINT EMPTY",
+      "POINT Z EMPTY",
+      "LINESTRING EMPTY",
+      "POLYGON EMPTY",
+      "MULTIPOINT EMPTY",
+      "MULTILINESTRING EMPTY",
+      "MULTIPOLYGON EMPTY",
+      "GEOMETRYCOLLECTION EMPTY",
+      "MULTIPOINT (EMPTY, (1 2))",
+      "MULTILINESTRING ((0 0, 1 0, 1 1, 0 0), EMPTY)",
+      "MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)",
+      "GEOMETRYCOLLECTION (POINT EMPTY)",
+      "GEOMETRYCOLLECTION (POINT (1 2), LINESTRING (0 0, 1 1))",
+      "GEOMETRYCOLLECTION (POINT (1 2), GEOMETRYCOLLECTION EMPTY)"
+    };
+    for (String wkt : closed) {
+      assertTrue(wkt, Functions.isClosed(Constructors.geomFromWKT(wkt, 0)));
+    }
+    for (String wkt : notClosed) {
+      assertFalse(wkt, Functions.isClosed(Constructors.geomFromWKT(wkt, 0)));
+    }
+  }
+
+  @Test
+  public void isClosedComparesZ() throws ParseException {
+    // As in PostGIS, line ends and polygon rings must also match in Z when the geometry has Z.
+    // M is not compared. The expected values match PostGIS.
+    String[] closed = {
+      "POINT Z (1 2 3)",
+      "LINESTRING Z (0 0 0, 1 1 0, 0 0 0)",
+      "LINESTRING M (0 0 0, 1 1 0, 0 0 5)",
+      "LINESTRING ZM (0 0 0 0, 1 1 0 0, 0 0 0 5)",
+      "POLYGON Z ((0 0 0, 4 0 0, 4 4 0, 0 0 0), (1 1 0, 2 1 0, 2 2 0, 1 1 0))",
+      "GEOMETRYCOLLECTION Z (LINESTRING Z (0 0 0, 1 1 0, 0 0 0))"
+    };
+    String[] notClosed = {
+      "LINESTRING Z (0 0 0, 1 1 0, 0 0 1)",
+      "MULTILINESTRING Z ((0 0 0, 1 1 0, 0 0 1))",
+      "GEOMETRYCOLLECTION Z (LINESTRING Z (0 0 0, 1 1 0, 0 0 1))",
+      "POLYGON Z ((0 0 0, 1 0 0, 1 1 0, 0 0 1))",
+      "POLYGON Z ((0 0 0, 4 0 0, 4 4 0, 0 0 0), (1 1 0, 2 1 0, 2 2 0, 1 1 1))",
+      "MULTIPOLYGON Z (((0 0 0, 1 0 0, 1 1 0, 0 0 1)))",
+      "GEOMETRYCOLLECTION Z (POLYGON Z ((0 0 0, 1 0 0, 1 1 0, 0 0 1)))"
+    };
+    for (String wkt : closed) {
+      assertTrue(wkt, Functions.isClosed(Constructors.geomFromWKT(wkt, 0)));
+    }
+    for (String wkt : notClosed) {
+      assertFalse(wkt, Functions.isClosed(Constructors.geomFromWKT(wkt, 0)));
+    }
+  }
+
+  @Test
+  public void isClosedNullAndEmptyHole() {
+    // Flink passes a null geometry straight in; master returned false for it.
+    assertFalse(Functions.isClosed(null));
+    // An empty hole is not closed, like an empty member, and must not throw.
+    LinearRing shell =
+        GEOMETRY_FACTORY.createLinearRing(
+            new Coordinate[] {
+              new Coordinate(0, 0), new Coordinate(4, 0), new Coordinate(4, 4), new Coordinate(0, 0)
+            });
+    Polygon polygon =
+        GEOMETRY_FACTORY.createPolygon(
+            shell, new LinearRing[] {GEOMETRY_FACTORY.createLinearRing()});
+    assertFalse(Functions.isClosed(polygon));
+  }
+
+  @Test
   public void forceCollection() throws ParseException {
     Geometry geom =
         Constructors.geomFromWKT("MULTIPOINT (30 10, 40 40, 20 20, 10 30, 10 10, 20 50)", 0);
@@ -3351,6 +3434,38 @@ public class FunctionsTest extends TestBase {
             "POLYGON M((0 0 3, 0 5 3, 5 0 3, 0 0 3), (1 1 3, 3 1 3, 1 3 3, 1 1 3))", 0);
     Geometry actualGeom = Functions.force3DM(geom, 10);
     assertTrue(Predicates.equals(geom, actualGeom));
+    assertEquals(Functions.asWKT(geom), Functions.asWKT(actualGeom));
+
+    // 4D XYZM geometry should retain M and drop Z
+    geom = Constructors.geomFromWKT("POINT ZM(1 2 3 4)", 0);
+    actualGeom = Functions.force3DM(geom, 10);
+    assertFalse(Functions.hasZ(actualGeom));
+    assertTrue(Functions.hasM(actualGeom));
+    assertEquals("POINT M(1 2 4)", Functions.asWKT(actualGeom));
+
+    geom = Constructors.geomFromWKT("POLYGON ZM((0 0 1 3, 0 5 1 3, 5 0 1 3, 0 0 1 3))", 0);
+    actualGeom = Functions.force3DM(geom, 10);
+    assertFalse(Functions.hasZ(actualGeom));
+    assertTrue(Functions.hasM(actualGeom));
+    assertEquals("POLYGON M((0 0 3, 0 5 3, 5 0 3, 0 0 3))", Functions.asWKT(actualGeom));
+
+    // 3D XYZ geometry should drop Z and add mValue
+    geom = Constructors.geomFromWKT("POINT Z(1 2 3)", 0);
+    actualGeom = Functions.force3DM(geom, 5);
+    assertFalse(Functions.hasZ(actualGeom));
+    assertTrue(Functions.hasM(actualGeom));
+    assertEquals("POINT M(1 2 5)", Functions.asWKT(actualGeom));
+
+    // Mixed-dimension GeometryCollection should keep existing M and fill missing M with mValue
+    geom =
+        Constructors.geomFromWKT(
+            "GEOMETRYCOLLECTION (POINT M(1 2 3), POINT ZM(4 5 6 7), POINT (8 9))", 0);
+    actualGeom = Functions.force3DM(geom, 10);
+    assertFalse(Functions.hasZ(actualGeom));
+    assertTrue(Functions.hasM(actualGeom));
+    assertEquals(
+        "GEOMETRYCOLLECTION M(POINT M(1 2 3), POINT M(4 5 7), POINT M(8 9 10))",
+        Functions.asWKT(actualGeom));
   }
 
   @Test
@@ -3428,6 +3543,255 @@ public class FunctionsTest extends TestBase {
     actual = Functions.asWKT(Functions.force4D(geom, 10, 10));
     expected = "LINESTRING ZM(0 1 10 3, 1 0 10 3, 2 0 10 3)";
     assertEquals(expected, actual);
+
+    // Mixed-dimension GeometryCollection should keep existing Z/M and fill only what is missing
+    geom =
+        Constructors.geomFromWKT(
+            "GEOMETRYCOLLECTION (POINT Z(1 2 3), POINT M(4 5 6), POINT ZM(7 8 9 10), POINT (11 12))",
+            0);
+    actual = Functions.asWKT(Functions.force4D(geom, 20, 30));
+    expected =
+        "GEOMETRYCOLLECTION ZM(POINT ZM(1 2 3 30), POINT ZM(4 5 20 6), POINT ZM(7 8 9 10), POINT ZM(11 12 20 30))";
+    assertEquals(expected, actual);
+  }
+
+  @Test
+  public void force3DMKeepsMultiTypes() throws ParseException {
+    // A MULTI* with a single member keeps its type, at the top level and nested.
+    assertForce3DM("MULTIPOINT ZM((1 2 3 4))", 9, "MULTIPOINT M((1 2 4))");
+    assertForce3DM("MULTIPOINT ZM((1 2 3 NaN))", 9, "MULTIPOINT M((1 2 9))");
+    assertForce3DM("MULTILINESTRING Z((0 0 1, 1 1 2))", 9, "MULTILINESTRING M((0 0 9, 1 1 9))");
+    assertForce3DM(
+        "MULTIPOLYGON (((0 0, 0 4, 4 4, 4 0, 0 0), (1 1, 2 1, 2 2, 1 1)))",
+        9,
+        "MULTIPOLYGON M(((0 0 9, 0 4 9, 4 4 9, 4 0 9, 0 0 9), (1 1 9, 2 1 9, 2 2 9, 1 1 9)))");
+    assertForce3DM(
+        "GEOMETRYCOLLECTION (MULTIPOINT ZM((1 2 3 4)), MULTILINESTRING ((0 0, 1 1)))",
+        9,
+        "GEOMETRYCOLLECTION M(MULTIPOINT M((1 2 4)), MULTILINESTRING M((0 0 9, 1 1 9)))");
+    assertForce3DM(
+        "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (MULTIPOLYGON (((0 0, 0 1, 1 1, 0 0)))))",
+        9,
+        "GEOMETRYCOLLECTION M(GEOMETRYCOLLECTION M(MULTIPOLYGON M(((0 0 9, 0 1 9, 1 1 9, 0 0 9)))))");
+
+    // Already in the target layout: returned as it is.
+    Geometry geom = geomFromWKT("MULTIPOINT M((1 2 3))", 0);
+    assertSame(geom, Functions.force3DM(geom, 9));
+  }
+
+  @Test
+  public void force3DMKeepsEmptyMembers() throws ParseException {
+    // Empty members and holes are kept, in the target layout, at the top level and nested, also
+    // when every other part is already in the target layout.
+    assertForce3DM(
+        "GEOMETRYCOLLECTION (POINT M(1 2 3), LINESTRING EMPTY)",
+        9,
+        "GEOMETRYCOLLECTION M(POINT M(1 2 3), LINESTRING M EMPTY)");
+    assertForce3DM(
+        "GEOMETRYCOLLECTION (POINT (1 2), LINESTRING EMPTY)",
+        9,
+        "GEOMETRYCOLLECTION M(POINT M(1 2 9), LINESTRING M EMPTY)");
+    assertForce3DM("MULTIPOINT ((1 2), EMPTY)", 9, "MULTIPOINT M((1 2 9), EMPTY)");
+    assertForce3DM(
+        "MULTILINESTRING ((0 0, 1 1), EMPTY)", 9, "MULTILINESTRING M((0 0 9, 1 1 9), EMPTY)");
+    assertForce3DM(
+        "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0), EMPTY)",
+        9,
+        "POLYGON M((0 0 9, 0 4 9, 4 4 9, 4 0 9, 0 0 9), EMPTY)");
+    assertForce3DM("MULTIPOINT (EMPTY, (1 2))", 9, "MULTIPOINT M(EMPTY, (1 2 9))");
+    assertForce3DM(
+        "MULTIPOLYGON (((0 0, 0 1, 1 1, 0 0)), EMPTY)",
+        9,
+        "MULTIPOLYGON M(((0 0 9, 0 1 9, 1 1 9, 0 0 9)), EMPTY)");
+    assertForce3DM(
+        "GEOMETRYCOLLECTION (MULTILINESTRING ((0 0, 1 1), EMPTY), POLYGON EMPTY)",
+        9,
+        "GEOMETRYCOLLECTION M(MULTILINESTRING M((0 0 9, 1 1 9), EMPTY), POLYGON M EMPTY)");
+
+    // Parts as Spark can produce them (for example with ST_Collect): an XYM point and an XY empty.
+    Geometry multi =
+        new GeometryFactory()
+            .createMultiPoint(
+                new Point[] {
+                  (Point) viaSerializer(geomFromWKT("POINT M(1 2 3)", 0)),
+                  (Point) viaSerializer(geomFromWKT("POINT EMPTY", 0))
+                });
+    Geometry result = Functions.force3DM(multi, 9);
+    assertLayout(result, 3, 1);
+    assertEquals("MULTIPOINT M((1 2 3), EMPTY)", Functions.asWKT(viaSerializer(result)));
+  }
+
+  @Test
+  public void force4DKeepsMultiTypes() throws ParseException {
+    // A MULTI* with a single member keeps its type, at the top level and nested.
+    assertForce4D("MULTIPOINT M((1 2 4))", 5, 7, "MULTIPOINT ZM((1 2 5 4))");
+    assertForce4D(
+        "MULTILINESTRING Z((0 0 1, 1 1 2))", 5, 7, "MULTILINESTRING ZM((0 0 1 7, 1 1 2 7))");
+    assertForce4D(
+        "MULTILINESTRING ZM((0 0 1 2, 1 1 NaN 2))", 5, 7, "MULTILINESTRING ZM((0 0 1 2, 1 1 5 2))");
+    assertForce4D("MULTIPOINT M((1 2 NaN))", 5, 7, "MULTIPOINT ZM((1 2 5 7))");
+    assertForce4D(
+        "MULTIPOLYGON (((0 0, 0 4, 4 4, 4 0, 0 0), (1 1, 2 1, 2 2, 1 1)))",
+        5,
+        7,
+        "MULTIPOLYGON ZM(((0 0 5 7, 0 4 5 7, 4 4 5 7, 4 0 5 7, 0 0 5 7), (1 1 5 7, 2 1 5 7, 2 2 5 7, 1 1 5 7)))");
+    assertForce4D(
+        "GEOMETRYCOLLECTION (MULTIPOINT Z((1 2 3)), MULTILINESTRING ((0 0, 1 1)))",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(MULTIPOINT ZM((1 2 3 7)), MULTILINESTRING ZM((0 0 5 7, 1 1 5 7)))");
+    assertForce4D(
+        "GEOMETRYCOLLECTION (GEOMETRYCOLLECTION (MULTIPOLYGON (((0 0, 0 1, 1 1, 0 0)))))",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(GEOMETRYCOLLECTION ZM(MULTIPOLYGON ZM(((0 0 5 7, 0 1 5 7, 1 1 5 7, 0 0 5 7)))))");
+
+    // Already in the target layout: returned as it is.
+    Geometry geom = geomFromWKT("MULTIPOINT ZM((1 2 3 4))", 0);
+    assertSame(geom, Functions.force4D(geom, 5, 7));
+  }
+
+  @Test
+  public void force4DKeepsEmptyMembers() throws ParseException {
+    // Empty members and holes are kept, in the target layout, at the top level and nested, also
+    // when every other part is already in the target layout.
+    assertForce4D(
+        "GEOMETRYCOLLECTION (POINT ZM(1 2 3 4), LINESTRING EMPTY)",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(POINT ZM(1 2 3 4), LINESTRING ZM EMPTY)");
+    assertForce4D(
+        "GEOMETRYCOLLECTION (POINT (1 2), LINESTRING EMPTY)",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(POINT ZM(1 2 5 7), LINESTRING ZM EMPTY)");
+    assertForce4D("MULTIPOINT ((1 2), EMPTY)", 5, 7, "MULTIPOINT ZM((1 2 5 7), EMPTY)");
+    assertForce4D("MULTIPOINT M((1 2 3), EMPTY)", 5, 7, "MULTIPOINT ZM((1 2 5 3), EMPTY)");
+    assertForce4D(
+        "MULTILINESTRING ((0 0, 1 1), EMPTY)",
+        5,
+        7,
+        "MULTILINESTRING ZM((0 0 5 7, 1 1 5 7), EMPTY)");
+    assertForce4D(
+        "POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0), EMPTY)",
+        5,
+        7,
+        "POLYGON ZM((0 0 5 7, 0 4 5 7, 4 4 5 7, 4 0 5 7, 0 0 5 7), EMPTY)");
+    assertForce4D(
+        "MULTIPOLYGON (((0 0, 0 1, 1 1, 0 0)), EMPTY)",
+        5,
+        7,
+        "MULTIPOLYGON ZM(((0 0 5 7, 0 1 5 7, 1 1 5 7, 0 0 5 7)), EMPTY)");
+    assertForce4D(
+        "GEOMETRYCOLLECTION (MULTILINESTRING ((0 0, 1 1), EMPTY), POLYGON EMPTY)",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(MULTILINESTRING ZM((0 0 5 7, 1 1 5 7), EMPTY), POLYGON ZM EMPTY)");
+
+    // Parts as Spark can produce them (for example with ST_Collect): an XYZM point and an XY empty.
+    Geometry multi =
+        new GeometryFactory()
+            .createMultiPoint(
+                new Point[] {
+                  (Point) viaSerializer(geomFromWKT("POINT ZM(1 2 3 4)", 0)),
+                  (Point) viaSerializer(geomFromWKT("POINT EMPTY", 0))
+                });
+    Geometry result = Functions.force4D(multi, 5, 7);
+    assertLayout(result, 4, 1);
+    assertEquals("MULTIPOINT ZM((1 2 3 4), EMPTY)", Functions.asWKT(viaSerializer(result)));
+  }
+
+  @Test
+  public void forceDimensionKeepsInputSrid() throws ParseException {
+    // Members built with another factory, as ST_Collect can do, must not change the SRID.
+    Geometry multi =
+        Functions.createMultiGeometry(
+            new Geometry[] {geomFromWKT("POINT (1 2)", 4326), geomFromWKT("POINT (3 4)", 0)});
+    assertEquals(4326, multi.getSRID());
+    assertEquals(4326, Functions.force3DM(multi, 9).getSRID());
+    assertEquals(4326, Functions.force4D(multi, 5, 7).getSRID());
+
+    Geometry collection =
+        multi
+            .getFactory()
+            .createGeometryCollection(
+                new Geometry[] {multi.getGeometryN(0), multi.getGeometryN(1)});
+    assertEquals(4326, Functions.force3DM(collection, 9).getSRID());
+    assertEquals(4326, Functions.force4D(collection, 5, 7).getSRID());
+  }
+
+  @Test
+  public void forceDimensionRejectsUnknownSubtypes() throws ParseException {
+    Circle circle = new Circle(geomFromWKT("POINT (1 2)", 0), 1.0);
+    assertThrows(IllegalArgumentException.class, () -> Functions.force3DM(circle, 9));
+    assertThrows(IllegalArgumentException.class, () -> Functions.force4D(circle, 5, 7));
+  }
+
+  @Test
+  public void forceDimensionKeepsThreePointRings() throws ParseException {
+    // GeometryTransformer turns a closed ring of three points into a LineString.
+    assertForce3DM("POLYGON ((0 0, 0 4, 0 0))", 9, "POLYGON M((0 0 9, 0 4 9, 0 0 9))");
+    assertForce4D("POLYGON ((0 0, 0 4, 0 0))", 5, 7, "POLYGON ZM((0 0 5 7, 0 4 5 7, 0 0 5 7))");
+    assertForce3DM(
+        "POLYGON ZM((0 0 1 2, 0 4 1 2, 4 4 1 2, 4 0 1 2, 0 0 1 2), (1 1 1 2, 2 1 1 2, 1 1 1 2))",
+        9,
+        "POLYGON M((0 0 2, 0 4 2, 4 4 2, 4 0 2, 0 0 2), (1 1 2, 2 1 2, 1 1 2))");
+    assertForce4D(
+        "MULTIPOLYGON Z(((0 0 1, 0 4 1, 0 0 1)))",
+        5,
+        7,
+        "MULTIPOLYGON ZM(((0 0 1 7, 0 4 1 7, 0 0 1 7)))");
+    assertForce4D(
+        "GEOMETRYCOLLECTION (POLYGON ((0 0, 0 4, 0 0)))",
+        5,
+        7,
+        "GEOMETRYCOLLECTION ZM(POLYGON ZM((0 0 5 7, 0 4 5 7, 0 0 5 7)))");
+  }
+
+  /**
+   * Runs ST_Force3DM the way Spark does, with input and result going through the geometry
+   * serializer, and checks that every part of the result, empty ones included, is XYM.
+   */
+  private static void assertForce3DM(String input, double m, String expected)
+      throws ParseException {
+    Geometry result = Functions.force3DM(viaSerializer(geomFromWKT(input, 0)), m);
+    assertLayout(result, 3, 1);
+    assertEquals(expected, Functions.asWKT(viaSerializer(result)));
+  }
+
+  /** Like {@link #assertForce3DM}, for ST_Force4D and the XYZM layout. */
+  private static void assertForce4D(String input, double z, double m, String expected)
+      throws ParseException {
+    Geometry result = Functions.force4D(viaSerializer(geomFromWKT(input, 0)), z, m);
+    assertLayout(result, 4, 1);
+    assertEquals(expected, Functions.asWKT(viaSerializer(result)));
+  }
+
+  private static Geometry viaSerializer(Geometry geometry) {
+    return GeometrySerializer.deserialize(GeometrySerializer.serialize(geometry));
+  }
+
+  private static void assertLayout(Geometry geometry, int dimension, int measures) {
+    if (geometry instanceof Point) {
+      assertLayout(((Point) geometry).getCoordinateSequence(), dimension, measures);
+    } else if (geometry instanceof LineString) {
+      assertLayout(((LineString) geometry).getCoordinateSequence(), dimension, measures);
+    } else if (geometry instanceof Polygon) {
+      Polygon polygon = (Polygon) geometry;
+      assertLayout(polygon.getExteriorRing(), dimension, measures);
+      for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
+        assertLayout(polygon.getInteriorRingN(i), dimension, measures);
+      }
+    } else {
+      for (int i = 0; i < geometry.getNumGeometries(); i++) {
+        assertLayout(geometry.getGeometryN(i), dimension, measures);
+      }
+    }
+  }
+
+  private static void assertLayout(CoordinateSequence coords, int dimension, int measures) {
+    assertEquals(dimension, coords.getDimension());
+    assertEquals(measures, coords.getMeasures());
   }
 
   @Test
@@ -5644,6 +6008,61 @@ public class FunctionsTest extends TestBase {
       assertEquals(i * 10, coordinates.getM(0), 0);
       assertEquals((i + 1) * 10, coordinates.getM(1), 0);
     }
+  }
+
+  @Test
+  public void isValidValidatorErrorReturnsFalse() throws ParseException {
+    // Near Double.MAX_VALUE the orientation determinant overflows to NaN, so JTS places the
+    // hole's first vertex on the shell boundary but then cannot find the shell segment it lies on.
+    Geometry geom =
+        geomFromWKT(
+            "POLYGON ((-1.7e308 -10, 1.7e308 -10, 1.7e308 0, 1.7e308 10, -1.7e308 10, -1.7e308 -10),"
+                + " (-1e308 0, -5e307 5, -5e307 -5, -1e308 0))",
+            0);
+    IllegalArgumentException validatorError =
+        assertThrows(
+            "fixture no longer makes the JTS validator throw",
+            IllegalArgumentException.class,
+            () -> new org.locationtech.jts.operation.valid.IsValidOp(geom).isValid());
+    assertEquals("Segment vertex does not intersect ring", validatorError.getMessage());
+
+    assertFalse(Functions.isValid(geom));
+    assertFalse(Functions.isValid(geom, 0));
+    assertFalse(Functions.isValid(geom, 1));
+
+    // The reason carries the validator's error, in the form GEOS reports it
+    String reason = "IllegalArgumentException: Segment vertex does not intersect ring";
+    assertEquals(reason, Functions.isValidReason(geom));
+    assertEquals(reason, Functions.isValidReason(geom, 0));
+    assertEquals(reason, Functions.isValidReason(geom, 1));
+    ValidDetail expectedDetail = new ValidDetail(false, reason, null);
+    assertTrue(expectedDetail.equals(Functions.isValidDetail(geom)));
+    assertTrue(expectedDetail.equals(Functions.isValidDetail(geom, 0)));
+    assertTrue(expectedDetail.equals(Functions.isValidDetail(geom, 1)));
+  }
+
+  @Test
+  public void isValidReasonAndDetailOfNullAreNull() {
+    assertNull(Functions.isValidReason(null));
+    assertNull(Functions.isValidReason(null, 1));
+    assertNull(Functions.isValidDetail(null));
+    assertNull(Functions.isValidDetail(null, 1));
+  }
+
+  @Test
+  public void isValidKeepsOrdinaryResults() throws ParseException {
+    assertTrue(Functions.isValid(geomFromWKT("POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))", 0)));
+    assertFalse(Functions.isValid(geomFromWKT("POLYGON ((0 0, 1 1, 0 1, 1 0, 0 0))", 0)));
+    assertTrue(Functions.isValid(geomFromWKT("POLYGON EMPTY", 0)));
+    assertTrue(Functions.isValid(geomFromWKT("GEOMETRYCOLLECTION EMPTY", 0)));
+    assertFalse(Functions.isValid(geomFromWKT("POINT (NaN NaN)", 0)));
+
+    // The shell touches itself at (5 10) and encloses an inverted hole: invalid under OGC,
+    // valid under the Esri model.
+    Geometry invertedHole =
+        geomFromWKT("POLYGON ((0 0, 10 0, 10 10, 5 10, 7 5, 3 5, 5 10, 0 10, 0 0))", 0);
+    assertFalse(Functions.isValid(invertedHole, 0));
+    assertTrue(Functions.isValid(invertedHole, 1));
   }
 
   @Test
